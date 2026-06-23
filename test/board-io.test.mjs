@@ -21,6 +21,7 @@ test("board rail: CREATE → list → claim → move → stale-gen 409 → bad-t
   const c = cards.find((x) => x.id === id);
   assert.ok(c, "created card not listed");
   assert.equal(c.state, "spec");
+  assert.equal(c.title, "rail test", "title should round-trip from CREATE into the snapshot");
 
   const claim = await client.claim(id, "designer", 1800);
   assert.equal(claim.ok, true, `claim failed: ${JSON.stringify(claim)}`);
@@ -28,6 +29,11 @@ test("board rail: CREATE → list → claim → move → stale-gen 409 → bad-t
 
   const mv = await client.move(id, claim.gen, "dev");
   assert.equal(mv.ok, true, `move spec->dev failed: ${JSON.stringify(mv)}`);
+
+  // The real loop clears the lease after every stage; do the same before the next claim
+  // (a back-to-back claim while the lease is still active is correctly fenced — single-owner).
+  const cl1 = await client.clearLease(id, claim.gen);
+  assert.equal(cl1.ok, true, `clear-lease after move failed: ${JSON.stringify(cl1)}`);
 
   // fresh lease in dev for the negative cases
   const claim2 = await client.claim(id, "developer", 1800);

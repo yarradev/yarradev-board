@@ -16,35 +16,52 @@ import { dirname, join } from "node:path";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONFIG_DIR = join(HERE, "..", "config");
 
-export function loadConfig() {
-  let cfg;
-  for (const name of ["board.json", "board.example.json"]) {
-    try {
-      cfg = JSON.parse(readFileSync(join(CONFIG_DIR, name), "utf8"));
-      break;
-    } catch {
-      /* try next */
-    }
+function readJsonIfPresent(path) {
+  let raw;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (e) {
+    if (e && e.code === "ENOENT") return undefined; // absent is fine
+    throw e; // permission/IO error — surface it
   }
-  if (!cfg) throw new Error(`no board config (looked for board.json / board.example.json in ${CONFIG_DIR})`);
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`invalid JSON in ${path}: ${e.message}`); // present-but-malformed must NOT be silently masked
+  }
+}
+
+export function loadConfig() {
+  // board.example.json is the committed template (base); board.json (gitignored) overlays it field-by-field,
+  // so a partial board.json (e.g. just apiBase/doName) still inherits lifecycle + pace from the template.
+  const base = readJsonIfPresent(join(CONFIG_DIR, "board.example.json")) ?? {};
+  const over = readJsonIfPresent(join(CONFIG_DIR, "board.json")) ?? {};
+  const cfg = {
+    ...base,
+    ...over,
+    pace: { ...(base.pace ?? {}), ...(over.pace ?? {}) },
+    lifecycle: over.lifecycle ?? base.lifecycle,
+  };
   if (process.env.YDB_API_BASE) cfg.apiBase = process.env.YDB_API_BASE;
   if (process.env.YDB_DO_NAME) cfg.doName = process.env.YDB_DO_NAME;
+  if (!cfg.apiBase || !cfg.doName) throw new Error(`board config missing apiBase/doName (config dir ${CONFIG_DIR})`);
+  if (!cfg.lifecycle) throw new Error(`board config missing lifecycle (config dir ${CONFIG_DIR})`);
   return cfg;
 }
 
 export function requireToken(tok) {
   const t = tok ?? process.env.YDB_TOKEN;
-  if (!t) throw new Error("YDB_TOKEN is not set (board bearer token, e.g. orch1.s3cret)");
+  if (!t) throw new Error("YDB_TOKEN is not set (board bearer token, shaped <token_id>.<secret>)");
   return t;
 }
 
 export class BoardClient {
-  /** opts: { apiBase, doName, token } — any omitted value falls back to config/env. */
+  /** opts: { apiBase, doName, token }. Precedence per field: explicit opt > env var > config file. */
   constructor(opts = {}) {
     const needCfg = opts.apiBase == null || opts.doName == null;
     const cfg = needCfg ? loadConfig() : {};
-    this.apiBase = opts.apiBase ?? cfg.apiBase;
-    this.doName = opts.doName ?? cfg.doName;
+    this.apiBase = opts.apiBase ?? process.env.YDB_API_BASE ?? cfg.apiBase;
+    this.doName = opts.doName ?? process.env.YDB_DO_NAME ?? cfg.doName;
     this.token = requireToken(opts.token);
   }
 
@@ -76,6 +93,7 @@ export class BoardClient {
       blocked: i.blocked,
       current_gen: i.current_gen,
       lease_expiry_ts: i.lease_expiry_ts,
+      title: i.title ?? null, // the card's intent — carried so the orchestrator can pass it to subagents
     }));
   }
 
@@ -87,6 +105,13 @@ export class BoardClient {
 
   async move(id, gen, to) {
     const { status, outcome } = await this.act({ type: "MOVE", item_id: id, gen, data: { to } });
+    return { ok: outcome === "committed", status, outcome };
+  }
+
+  // Backward edge (reject). Distinct act type from MOVE: the board only matches a backward transition
+  // declared as type:"REJECT", and bounce budgets fire on REJECT. gen-required, like MOVE.
+  async reject(id, gen, to) {
+    const { status, outcome } = await this.act({ type: "REJECT", item_id: id, gen, data: { to } });
     return { ok: outcome === "committed", status, outcome };
   }
 
