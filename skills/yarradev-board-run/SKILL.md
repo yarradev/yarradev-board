@@ -44,7 +44,7 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
   lives only in that one process. Do **NOT** `export` it to the shell, write it to a file, or place it
   in a subagent's prompt: role subagents have Bash and share this machine, so an exported or persisted
   token is readable by them (`printenv` / `cat`) and would let a prompt-injected subagent forge acts
-  under your identity. (True per-subagent isolation = distinct board identities — Slice 2.)
+  under your identity. (True per-subagent isolation = distinct board identities — a future increment.)
 
 ## Per-pass procedure (one /loop invocation)
 Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.

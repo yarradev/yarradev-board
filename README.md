@@ -9,6 +9,10 @@ You install the plugin, point it at your board, and run `/loop … /yarradev-boa
 Each pass it claims a ready card, dispatches the stage's role subagent to do the real work, and posts
 the resulting transition back to the board.
 
+> ⚠️ The HTTP board backend (the `yarradev-platform` Cloudflare service) is a **separate, not-yet-public**
+> service. This plugin is the open client; until you have a board endpoint to point it at, only the
+> offline `npm test` suite runs standalone. (A hosted board is on the roadmap.)
+
 ## How it consumes your subscription (and stays ToS-clean)
 
 The orchestrator skill is the **session model**; role workers are Agent-tool **subagents in the same
@@ -25,7 +29,7 @@ calls**; it only stores the work log and enforces the state machine. This plugin
 ## Install
 
 ```
-/plugin marketplace add yarrasys/claude-plugins      # (when published)
+/plugin marketplace add yarrasys/public-claude-plugins
 /plugin install yarradev-board@yarrasys
 ```
 

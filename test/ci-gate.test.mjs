@@ -2,7 +2,7 @@
  * Live mechanical-CI-gate test (no real GitHub). OPT-IN: set YDB_IT=1 and boot a stack where:
  *  - the target board (YDB_DO_NAME, default "acme:ci") has a `ci_green` gate on dev→test and the
  *    orchestrator identity (YDB_TOKEN) has CREATE/CLAIM/MOVE/LINK_PR/CLEAR_LEASE caps;
- *  - the webhook worker (YDB_WEBHOOK, default http://localhost:8803) is up with secret `whsec`;
+ *  - the webhook worker (YDB_WEBHOOK, default http://localhost:8803) is up with secret `local-whsec`;
  *  - CATALOG has installation '1' → repo_board(YDB_REPO default owner/repo → the board).
  * See README "Local mechanical-gate demo". Skips without YDB_IT so `npm test` stays offline-green.
  */
@@ -13,7 +13,7 @@ import { BoardClient } from "../skills/yarradev-board-run/scripts/lib.mjs";
 
 const skip = process.env.YDB_IT === "1" ? false : "set YDB_IT=1 + boot the ci-gated board/webhook to run";
 const WEBHOOK = process.env.YDB_WEBHOOK ?? "http://localhost:8803";
-const WHSECRET = process.env.YDB_WHSECRET ?? "whsec";
+const WHSECRET = process.env.YDB_WHSECRET ?? "local-whsec";
 const REPO = process.env.YDB_REPO ?? "owner/repo";
 const INSTALL = process.env.YDB_INSTALL ?? "1";
 
