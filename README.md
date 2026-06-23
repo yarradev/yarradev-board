@@ -71,6 +71,33 @@ minLoopIntervalS:300 }`.
    tester (fetches the branch, validates) → test→done. Confirm
    `GET /boards/acme:flow/cards/card-1` → `state: done`.
 
+## Local mechanical-gate demo (Slice 2)
+
+Proves the `dev→test` CI gate **without real GitHub** (you sign your own `check_run`). Boot board(:8801)
++ api(:8802) + **webhook(:8803)** (`--var GITHUB_APP_WEBHOOK_SECRET=local-whsec`), all
+`--persist-to /tmp/yd-state`.
+
+1. **Create a CI-gated board** (admin `POST /boards`): machine transition `{from:"dev",to:"test",
+   gate:{p:"ci_green"}}`, and orchestrator caps including `LINK_PR`/`PUSH` plus a
+   `{kind:"system",role:"github-app",act_type:"INGEST_FACT"}` cap.
+2. **Seed routing** in CATALOG: an `installation` row + `repo_board(installation, owner/repo → your
+   board)` — `wrangler d1 execute yarradev-catalog --local --persist-to /tmp/yd-state --command
+   "INSERT OR IGNORE INTO repo_board ..."`.
+3. **Run the loop.** A `dev` card with no PR → developer (mechanical mode) pushes a branch and returns
+   `submitted{repo,pr_number,head}`; the orchestrator posts `LINK_PR`. A MOVE dev→test now is **422
+   `gate_blocked` `ci_green`** (CI absent).
+4. **Deliver CI** — a signed `check_run{head_sha:<head>, conclusion:"success"}` to `:8803`
+   (header `x-hub-signature-256` = HMAC-SHA256 of the body with the webhook secret) → routed via
+   `installation`→`repo_board` → board → `ci_rollup=success`.
+5. Next pass: `decide → advance` → orchestrator MOVEs dev→test (gate passes) — **no developer
+   re-spawn**. A `conclusion:"failure"` → `ci_rollup=failure` → `decide → respawn` → developer fixes,
+   pushes a new head, orchestrator `PUSH`es it; a later green `check_run` on the new head advances (a
+   stale `check_run` on the old head is dropped).
+
+Opt-in integration test against this stack:
+`YDB_IT=1 YDB_TOKEN=<token> YDB_DO_NAME=<ci-gated-board> YDB_WHSECRET=<secret> npm test`
+(exercises LINK_PR → MOVE 422 `ci_green` → signed `check_run` → advance).
+
 ## Tests
 
 ```
