@@ -69,8 +69,8 @@ minLoopIntervalS:300 }`, budgets `{ transition_budget:50, bounce_limit:3, respaw
 
 ## Local end-to-end demo (against the platform stack)
 
-`board.example.json` ships the full lifecycle, so this demo exercises all four gates (judgement, CI,
-advisor VETO, human GO). Boot the **board** (:8801), **api** (:8802), and **webhook** (:8803) in the
+`board.example.json` ships the full lifecycle, so this demo exercises every gate in it (judgement, CI,
+advisor VETO, the releaser staging deploy, and human GO). Boot the **board** (:8801), **api** (:8802), and **webhook** (:8803) in the
 `yarradev-platform` repo (`wrangler dev`, all `--persist-to /tmp/yd-state`, and
 `--var GITHUB_APP_WEBHOOK_SECRET=local-whsec` on the webhook).
 
