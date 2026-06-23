@@ -150,11 +150,14 @@ agents driving the full lifecycle `spec→dev→test→done→staging→prod`:
   an isolated worktree, returns a verdict, and the orchestrator MOVEs the card to `staging` (a failed
   deploy rejects to `dev`); the releaser never touches production.
 - a **human production gate** — `staging→prod` requires a `byKind:human` `HUMAN_GO` (`promote`); agents
-  cannot self-approve a release.
+  cannot self-approve a release;
+- **per-role board identities (least privilege)** — each act is posted under the role that produced it via
+  a per-role token (`YDB_TOKEN_<ROLE>`, falling back to the shared `YDB_TOKEN`), so each role is scoped to
+  only the acts it may post.
 
-The orchestrator holds the board token (inlined per call) and posts every act under one shared identity
-from each subagent's returned verdict.
+The orchestrator holds **all** the per-role board tokens (inlined per call) and posts each act under the
+identity of the role that produced it — from each subagent's returned verdict, **never** handing a token
+to a subagent.
 
-**Next:** per-role board identities (true per-subagent isolation), richer cross-stage context persistence
-(designer's plan → developer), `RENEW` for long jobs, multi-card concurrency, the analyst/epic tier, and
-the Cloudflare deploy.
+**Next:** richer cross-stage context persistence (designer's plan → developer), `RENEW` for long jobs,
+multi-card concurrency, the analyst/epic tier, and a GitHub App + dashboard for the hosted board.
