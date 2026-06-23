@@ -27,8 +27,9 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
 
 ## Config & auth
 - Scripts: `${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts/` (call as `node <that>/<name>.mjs`).
-- Board config (apiBase, doName, lifecycle, pace): `…/config/board.json` — copy it from
+- Board config (apiBase, doName, lifecycle, pace, budgets): `…/config/board.json` — copy it from
   `board.example.json` and edit (a partial `board.json` merges over the template). It holds **no secret**.
+  `budgets` = `{ transition_budget, bounce_limit, respawn_window_ms, per_edge_overrides }` (thrash caps).
 - **Board bearer token — pass it INLINE, never export it.** The token (shaped `<token_id>.<secret>`)
   authenticates you to the board; it is **not** a Claude credential. The user gives it to you at loop
   start. Pass it inline on **every** script call — `YDB_TOKEN=<token> node $S/<script>.mjs …` — so it
@@ -41,10 +42,15 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
 Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
 
 1. **List ready cards:** `node $S/list-ready.mjs` → one JSON line per actionable card:
-   `{ "kind":"work"|"advance"|"respawn", "id", "state", "role"?, "to"?, "title" }` (`title` is the intent).
-   `work` carries role+to; `advance` carries to; `respawn` carries role. Cards that are waiting
-   (terminal/blocked/leased/ci-pending/ci-absent/…) are logged to stderr and skipped.
+   `{ "kind":"work"|"advance"|"respawn"|"escalate", "id", "state", "role"?, "to"?, "reason"?, "title" }`.
+   `work` carries role+to; `advance` carries to; `respawn` carries role; `escalate` carries reason (a
+   budget is exhausted / CI stalled — park for a human). Waiting cards (terminal/blocked/leased/
+   ci-pending/ci-absent/…) are logged to stderr and skipped.
 2. **For each actionable card, sequentially, up to `pace.maxCardsPerPass` (default 1), branch on `kind`:**
+
+   **`escalate`** — a budget is exhausted / CI is stalled; park for a human (**no CLAIM, no dispatch, no quota**):
+   1. `node $S/escalate.mjs <id> "<reason>"` — opens a question via `ASK` → the board sets `blocked=true`.
+   2. Log. The card is now parked; `list-ready` skips it until a human posts an `ANSWER` to resume.
 
    **`advance`** — a mechanical gate (e.g. CI) is satisfied; MOVE with **no dispatch** (no subscription cost):
    1. `node $S/claim.mjs <id> developer <pace.claimTtlS>` → keep `gen` (`ok:false` → log `claim-failed`, skip).
@@ -64,13 +70,16 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
    3. **PARSE** the last fenced ` ```json ` block and post the matching act with `<gen>`:
       - judgement `status:"advance"` → `node $S/move.mjs <id> <gen> <to>`.
       - judgement `status:"reject"` → `node $S/reject.mjs <id> <gen> <verdict.to>` (backward REJECT edge).
+        If it returns **422 `bounce budget exhausted`** the edge has thrashed too often → run
+        `node $S/escalate.mjs <id> "bounce budget: <edge>"` (park for a human) instead of re-looping.
       - mechanical `status:"submitted"` `evidence:{repo, pr_number, head}` — choose the act by **`kind`**,
         never by a second snapshot read:
         - `kind:"work"` (first submission) → `node $S/link-pr.mjs <id> <gen> <repo> <pr_number> <head>`.
         - `kind:"respawn"` (fix) → `node $S/push.mjs <id> <gen> <repo> <pr_number> <head>`.
         - **Do NOT MOVE** — the card waits for CI; a later `advance` pass moves it. (A PUSH with no prior
           LINK_PR strands CI, so the work→LINK_PR / respawn→PUSH split is load-bearing.)
-      - `status:"question"` / `"error"` / **no parseable block** → post nothing; log (Slice 2: escalate).
+      - `status:"question"` → `node $S/escalate.mjs <id> "<the question>"` (park for a human).
+        `"error"` / **no parseable block** → post nothing; log; retry next pass.
    4. **CLEAR_LEASE — always:** `node $S/clear-lease.mjs <id> <gen>` in **every** branch.
    5. Log a one-line outcome.
 3. **Yield.** Re-run via `/loop <interval> /yarradev-board:yarradev-board-run` (interval ≥

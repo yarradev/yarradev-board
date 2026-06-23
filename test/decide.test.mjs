@@ -50,3 +50,18 @@ test("decide (mechanical dev): work/advance/respawn/wait by linked_head_sha + ci
   // terminal is still terminal
   assert.deepEqual(decide(mcard({ state: "done" }), MLC, 1000), { kind: "noop", reason: "terminal" });
 });
+
+const B = { transition_budget: 5, bounce_limit: 3, respawn_window_ms: 1000, per_edge_overrides: {} };
+
+test("decide (budgets): transition-budget + ci-stall escalate; otherwise normal", () => {
+  // transition budget reached (any non-terminal stage) -> escalate (park for human)
+  assert.deepEqual(decide(card({ state: "spec", transitions_count: 5 }), LC, 1000, B), { kind: "escalate", reason: "transition-budget" });
+  // under budget -> normal work
+  assert.deepEqual(decide(card({ state: "spec", transitions_count: 4 }), LC, 1000, B), { kind: "work", role: "designer", to: "dev" });
+  // mechanical CI failure within the respawn window -> respawn
+  assert.deepEqual(decide(mcard({ linked_head_sha: "abc", ci_rollup: "failure", parked_since_ts: 900 }), MLC, 1000, B), { kind: "respawn", role: "developer" });
+  // mechanical CI failure past the respawn window -> escalate (ci-stalled)
+  assert.deepEqual(decide(mcard({ linked_head_sha: "abc", ci_rollup: "failure", parked_since_ts: 0 }), MLC, 2000, B), { kind: "escalate", reason: "ci-stalled" });
+  // blocked (parked via ASK) is still skipped regardless of budget
+  assert.deepEqual(decide(card({ state: "spec", blocked: true, transitions_count: 5 }), LC, 1000, B), { kind: "noop", reason: "blocked" });
+});

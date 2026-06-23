@@ -97,6 +97,8 @@ export class BoardClient {
       ci_rollup: i.ci_rollup ?? "absent", // mechanical-gate input: success|pending|failure|blocked|absent
       linked_head_sha: i.linked_head_sha ?? null, // "PR submitted" signal for the mechanical gate
       lease_role: i.lease_role ?? null, // informational (decide uses stage.owner, not this)
+      transitions_count: i.transitions_count ?? 0, // board-counted thrash tally (MOVE/REJECT) → transition budget
+      parked_since_ts: i.parked_since_ts ?? 0, // entry-to-state ts → time-bounds the in-place CI-failure loop
     }));
   }
 
@@ -130,6 +132,13 @@ export class BoardClient {
   // Use only when decide() said "respawn" — the pr_link row is guaranteed to exist.
   async push(id, gen, { repo, pr_number, head }) {
     const { status, outcome } = await this.act({ type: "PUSH", item_id: id, gen, data: { repo, pr_number, head } });
+    return { ok: outcome === "committed", status, outcome };
+  }
+
+  // Park a card for a human via an open question (ASK, gen-exempt → no gen). The board sets
+  // blocked=true; decide() then skips it until a human posts ANSWER. Used on budget exhaustion.
+  async escalate(id, reason = "") {
+    const { status, outcome } = await this.act({ type: "ASK", item_id: id, data: { cat: "escalation", reason } });
     return { ok: outcome === "committed", status, outcome };
   }
 

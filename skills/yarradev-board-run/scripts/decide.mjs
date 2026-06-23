@@ -1,41 +1,54 @@
 /*
- * yarradev-board — pure per-card decision (gate-aware).
+ * yarradev-board — pure per-card decision (gate-aware + budget-aware).
  *
- * PROVENANCE: extends yarradev-platform/orchestrator/src/decide.ts with a mechanical-gate branch
- * (mirrors v1 eval-gates.js mechanical(): work / advance / respawn / wait). Keep the judgement path
- * in sync with the platform source.
+ * PROVENANCE: extends yarradev-platform/orchestrator/src/decide.ts; mechanical-gate + budgets mirror
+ * v1 eval-gates.js (mechanical() + the transition_budget/bounce_limit escalate backstop).
  *
- * Lifecycle: Record<state, { owner, to|null, gate?: "judgement"|"mechanical" }>. `to:null` = terminal;
- * `gate` absent or "judgement" ⇒ the subagent's verdict drives the MOVE (Slice 1 behaviour).
+ * Lifecycle: Record<state, { owner, to|null, gate?: "judgement"|"mechanical" }>. `to:null` = terminal.
+ * Budgets (4th arg): { transition_budget, bounce_limit, respawn_window_ms, per_edge_overrides }.
+ *   - transition_budget: board-counted (MOVE/REJECT bump transitions_count) → bounds all thrash that transitions.
+ *   - respawn_window_ms: time bound on the in-place CI-failure loop (respawns are NOT board-counted).
+ *   - bounce_limit is enforced by the BOARD on REJECT (422); the orchestrator escalates on that 422.
  *
- * Returns one of:
- *   { kind:"work",    role, to }  spawn the owner (judgement, or mechanical with no PR linked yet)
- *   { kind:"advance", to }        mechanical CI is green → orchestrator MOVEs without spawning
- *   { kind:"respawn", role }      mechanical CI failed + lease expired → re-spawn the owner to fix
- *   { kind:"noop",    reason }     terminal | unknown-state | blocked | leased | ci-pending|blocked|absent
- *
- * Card fields read: state, blocked, lease_expiry_ts, ci_rollup, linked_head_sha.
+ * Returns: { kind:"work",role,to } | { kind:"advance",to } | { kind:"respawn",role }
+ *        | { kind:"escalate",reason } | { kind:"noop",reason }.
+ * Card fields read: state, blocked, lease_expiry_ts, ci_rollup, linked_head_sha, transitions_count, parked_since_ts.
  */
-export function decide(card, lc, nowMs) {
+export const DEFAULT_BUDGETS = {
+  transition_budget: 50,
+  bounce_limit: 3,
+  respawn_window_ms: 60000,
+  per_edge_overrides: {},
+};
+
+export function decide(card, lc, nowMs, budgets = DEFAULT_BUDGETS) {
   const stage = lc[card.state];
   if (!stage) return { kind: "noop", reason: "unknown-state" };
   if (stage.to == null) return { kind: "noop", reason: "terminal" };
-  if (card.blocked) return { kind: "noop", reason: "blocked" }; // governance flag (≠ ci_rollup "blocked")
+  if (card.blocked) return { kind: "noop", reason: "blocked" }; // parked: open question / escalation (ASK)
 
   const leased = card.lease_expiry_ts != null && card.lease_expiry_ts > nowMs;
+  if (leased) return { kind: "noop", reason: "leased" }; // a worker holds it this pass — never double-spawn
 
-  // Judgement stage (default): one spawn per pass; the verdict drives MOVE/REJECT.
+  // Global thrash backstop (board-counted on MOVE/REJECT) → park for a human past the budget.
+  if ((card.transitions_count ?? 0) >= budgets.transition_budget) {
+    return { kind: "escalate", reason: "transition-budget" };
+  }
+
+  // Judgement stage (default): the subagent's verdict drives MOVE/REJECT.
   if (stage.gate !== "mechanical") {
-    if (leased) return { kind: "noop", reason: "leased" };
     return { kind: "work", role: stage.owner, to: stage.to };
   }
 
-  // Mechanical stage: derive intent from (lease, linked_head_sha, ci_rollup). Order matters —
-  // the leased check precedes the CI checks so a stale rollup can't re-spawn over a live worker.
-  if (leased) return { kind: "noop", reason: "leased" };
+  // Mechanical stage: derive intent from (linked_head_sha, ci_rollup), bounded by time-in-state.
   if (card.linked_head_sha == null) return { kind: "work", role: stage.owner, to: stage.to }; // no PR yet
   const ci = card.ci_rollup ?? "absent";
   if (ci === "success") return { kind: "advance", to: stage.to };
-  if (ci === "failure") return { kind: "respawn", role: stage.owner };
+  if (ci === "failure") {
+    // CI keeps failing in place; respawns aren't board-counted, so bound the loop by time-in-state.
+    const since = card.parked_since_ts ?? nowMs;
+    if (nowMs - since > budgets.respawn_window_ms) return { kind: "escalate", reason: "ci-stalled" };
+    return { kind: "respawn", role: stage.owner };
+  }
   return { kind: "noop", reason: "ci-" + ci }; // pending | blocked | absent → wait for CI
 }
