@@ -3,7 +3,7 @@
   "doName": "acme:flow",
   "lifecycle": {
     "spec": { "owner": "designer", "to": "dev" },
-    "dev": { "owner": "developer", "to": "test" },
+    "dev": { "owner": "developer", "to": "test", "gate": "mechanical" },
     "test": { "owner": "tester", "to": "done" },
     "done": { "owner": "", "to": null }
   },

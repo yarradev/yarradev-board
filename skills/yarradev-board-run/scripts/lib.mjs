@@ -94,6 +94,9 @@ export class BoardClient {
       current_gen: i.current_gen,
       lease_expiry_ts: i.lease_expiry_ts,
       title: i.title ?? null, // the card's intent — carried so the orchestrator can pass it to subagents
+      ci_rollup: i.ci_rollup ?? "absent", // mechanical-gate input: success|pending|failure|blocked|absent
+      linked_head_sha: i.linked_head_sha ?? null, // "PR submitted" signal for the mechanical gate
+      lease_role: i.lease_role ?? null, // informational (decide uses stage.owner, not this)
     }));
   }
 
@@ -112,6 +115,21 @@ export class BoardClient {
   // declared as type:"REJECT", and bounce budgets fire on REJECT. gen-required, like MOVE.
   async reject(id, gen, to) {
     const { status, outcome } = await this.act({ type: "REJECT", item_id: id, gen, data: { to } });
+    return { ok: outcome === "committed", status, outcome };
+  }
+
+  // Link a PR head to the card (FIRST submission). gen-required. Sets linked_head_sha + creates the
+  // pr_link row that CI facts head-match on. Use this when decide() said "work" (no PR yet) — NOT as a
+  // substitute for push() (a PUSH with no prior pr_link row strands CI forever).
+  async linkPr(id, gen, { repo, pr_number, head }) {
+    const { status, outcome } = await this.act({ type: "LINK_PR", item_id: id, gen, data: { repo, pr_number, head } });
+    return { ok: outcome === "committed", status, outcome };
+  }
+
+  // Re-point an EXISTING pr_link's head (a re-spawn-to-fix pushed new commits). gen-required.
+  // Use only when decide() said "respawn" — the pr_link row is guaranteed to exist.
+  async push(id, gen, { repo, pr_number, head }) {
+    const { status, outcome } = await this.act({ type: "PUSH", item_id: id, gen, data: { repo, pr_number, head } });
     return { ok: outcome === "committed", status, outcome };
   }
 

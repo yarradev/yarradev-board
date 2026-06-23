@@ -32,19 +32,31 @@ Implement the plan on a branch, commit, and **push the branch** so the tester ca
 2. Implement the plan. Stage only your files, confirm `git status`, commit.
 3. `git push -u origin feature/<cardId>-<short-slug>`.
 
-> Slice 1 is a **judgement** dev→test gate: no PR/CI here — the tester reads your branch and decides.
-> (PR + mechanical `ci_green` gate is Slice 2.)
+## Mode (passed in your inputs as `mode`; default judgement)
+- **mechanical** — the `dev` gate is `ci_green`: you push your branch and **CI decides**. Your completion
+  signal is **`submitted`** (the PR + full head SHA), **NOT** `advance`. After pushing, capture the full
+  40-char SHA with `git rev-parse HEAD`. In production also open a PR (`gh pr create … --body "Refs #<cardId>"`,
+  non-closing); in a local demo without GitHub, skip `gh` and report a stable `pr_number` derived from the
+  cardId. On a **re-spawn-to-fix** (`respawn:true` in your inputs): check out the SAME `feature/<cardId>-…`
+  branch, fix the failure described in your inputs, commit, push (fast-forward), and report the NEW full SHA.
+  The orchestrator links your PR (first submission) or re-points its head (fix); the board advances the card
+  on a later pass once CI is green — you never MOVE it.
+- **judgement** (no CI gate) — the tester reads your branch and decides; return `advance` to `test`.
 
 ## Return — FINAL output = one fenced JSON block
-- Built → advance, carrying the branch + commit so the tester can find it:
+- **mechanical**, pushed → submitted (`head` MUST be the full 40-char SHA — CI ingest matches it exactly):
   ```json
-  { "status": "advance", "to": "test", "summary": "<one line>", "evidence": "branch feature/<cardId>-<slug> @ <commit-sha>; <n> files changed" }
+  { "status": "submitted", "summary": "<one line>", "evidence": { "repo": "<owner/repo>", "pr_number": <n>, "head": "<full-40-char-sha>" } }
   ```
-- Plan unbuildable as written → reject to design:
+- **judgement**, built → advance:
+  ```json
+  { "status": "advance", "to": "test", "summary": "<one line>", "evidence": "branch feature/<cardId>-<slug> @ <full-sha>; <n> files" }
+  ```
+- Plan unbuildable as written → reject to design (either mode):
   ```json
   { "status": "reject", "to": "spec", "summary": "<why the plan can't be built as written + what design must resolve>" }
   ```
-- No plan/scope, or blocked on a product question → ask:
+- No plan/scope, or blocked on a product question → ask (either mode):
   ```json
   { "status": "question", "summary": "<the single blocking question, with options + a recommendation>" }
   ```

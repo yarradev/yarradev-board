@@ -40,31 +40,39 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
 ## Per-pass procedure (one /loop invocation)
 Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
 
-1. **List ready cards:** `node $S/list-ready.mjs` → one JSON line per workable card:
-   `{ "id", "state", "role", "to", "title" }` (`title` is the card's intent). Terminal/blocked/leased/
-   unknown cards are skipped and logged to stderr.
-2. **For each ready card, sequentially, up to `pace.maxCardsPerPass` (default 1):**
-   1. **CLAIM:** `node $S/claim.mjs <id> <role> <pace.claimTtlS>` → `{ ok, gen, status, outcome }`.
-      - `ok:false` (409 fenced / non-202): another owner holds it — log `claim-failed`, **skip** this card.
-      - `ok:true`: keep **`gen`** (the granted lease generation) — thread it **verbatim** into the MOVE and CLEAR_LEASE.
-   2. **DISPATCH one subagent** via the **Agent tool**, `subagent_type: "yarradev-board:<role>"`
-      (`designer` | `developer` | `tester`). In the prompt pass the spawn inputs:
-      `{ doName, cardId: <id>, state, to, role }` + the card's `title` (its intent). The **tester**
-      locates the developer's work by **cardId** — the branch is `feature/<cardId>-…` — so no
-      cross-pass handoff is needed. **For `role == developer` set `isolation: "worktree"`** (it mutates
-      files). The subagent does the real work and **returns a fenced ` ```json ` verdict block**; it
-      never touches the board. (Slice 1 carries only `title` as intent; persisting the designer's plan
-      forward to the developer is Slice 2.)
-   3. **PARSE** the subagent's return — take the **last** fenced ` ```json ` block →
-      `{ status, to, summary, evidence }`:
-      - `status:"advance"` → `node $S/move.mjs <id> <gen> <to>` (`to` must equal the lifecycle next state).
-      - `status:"reject"` → `node $S/reject.mjs <id> <gen> <verdict.to>` (a backward edge, e.g. test→dev;
-        a distinct REJECT act — the board declares backward edges as `type:"REJECT"`, so a MOVE there 422s).
-      - `status:"question"` / `"error"` / **no parseable block** → post nothing; log it (Slice 2: escalate to a human).
-   4. **CLEAR_LEASE — always:** `node $S/clear-lease.mjs <id> <gen>` in **every** branch above
-      (advance, reject, question, error) so a crashed pass never strands a lease.
-   5. Log a one-line outcome. Carry useful `evidence` (e.g. the developer's branch) forward into the
-      next stage's card context.
+1. **List ready cards:** `node $S/list-ready.mjs` → one JSON line per actionable card:
+   `{ "kind":"work"|"advance"|"respawn", "id", "state", "role"?, "to"?, "title" }` (`title` is the intent).
+   `work` carries role+to; `advance` carries to; `respawn` carries role. Cards that are waiting
+   (terminal/blocked/leased/ci-pending/ci-absent/…) are logged to stderr and skipped.
+2. **For each actionable card, sequentially, up to `pace.maxCardsPerPass` (default 1), branch on `kind`:**
+
+   **`advance`** — a mechanical gate (e.g. CI) is satisfied; MOVE with **no dispatch** (no subscription cost):
+   1. `node $S/claim.mjs <id> developer <pace.claimTtlS>` → keep `gen` (`ok:false` → log `claim-failed`, skip).
+   2. `node $S/move.mjs <id> <gen> <to>`. Committed → advanced. **422 `gate_blocked`** (CI flipped since the
+      list) → log, fall through to CLEAR; the next pass re-derives.
+   3. `node $S/clear-lease.mjs <id> <gen>` — always.
+
+   **`work`** or **`respawn`** — dispatch the stage owner:
+   1. **CLAIM:** `node $S/claim.mjs <id> <role> <pace.claimTtlS>` → keep **`gen`** (`ok:false` → skip).
+      Thread `gen` **verbatim** into the act you post and into CLEAR_LEASE; never reuse a gen across passes.
+   2. **DISPATCH one subagent** via the **Agent tool**, `subagent_type: "yarradev-board:<role>"`. Pass
+      `{ doName, cardId, state, to, role, title }`; for a **mechanical** stage also pass
+      `{ mode:"mechanical", respawn: (kind === "respawn") }` (+ the prior failure summary on a respawn,
+      best-effort from this pass's log). **`developer` → `isolation:"worktree"`.** The tester finds the dev
+      branch by `cardId` (`feature/<cardId>-…`). The subagent returns a fenced ` ```json ` verdict and never
+      touches the board.
+   3. **PARSE** the last fenced ` ```json ` block and post the matching act with `<gen>`:
+      - judgement `status:"advance"` → `node $S/move.mjs <id> <gen> <to>`.
+      - judgement `status:"reject"` → `node $S/reject.mjs <id> <gen> <verdict.to>` (backward REJECT edge).
+      - mechanical `status:"submitted"` `evidence:{repo, pr_number, head}` — choose the act by **`kind`**,
+        never by a second snapshot read:
+        - `kind:"work"` (first submission) → `node $S/link-pr.mjs <id> <gen> <repo> <pr_number> <head>`.
+        - `kind:"respawn"` (fix) → `node $S/push.mjs <id> <gen> <repo> <pr_number> <head>`.
+        - **Do NOT MOVE** — the card waits for CI; a later `advance` pass moves it. (A PUSH with no prior
+          LINK_PR strands CI, so the work→LINK_PR / respawn→PUSH split is load-bearing.)
+      - `status:"question"` / `"error"` / **no parseable block** → post nothing; log (Slice 2: escalate).
+   4. **CLEAR_LEASE — always:** `node $S/clear-lease.mjs <id> <gen>` in **every** branch.
+   5. Log a one-line outcome.
 3. **Yield.** Re-run via `/loop <interval> /yarradev-board:yarradev-board-run` (interval ≥
    `pace.minLoopIntervalS`, default 5m; keep it under your prompt-cache TTL for cache hits).
 
