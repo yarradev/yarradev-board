@@ -5,7 +5,9 @@
  *   yarradev-platform/orchestrator/src/client.ts (HttpBoardClient).
  * Keep the act shapes (CLAIM/MOVE/CLEAR_LEASE) and the gen handling in sync with that source.
  *
- * Auth: the board bearer token comes ONLY from the YDB_TOKEN env var (never config, never argv).
+ * Auth: the board bearer comes from env only (never config, never argv) — per ACTING ROLE via
+ *       YDB_TOKEN_<ROLE> (e.g. YDB_TOKEN_DEVELOPER) for a per-role board identity, else the shared
+ *       YDB_TOKEN. See resolveToken(). Tokens NEVER reach a subagent — the orchestrator posts every act.
  * Config: skills/yarradev-board-run/config/board.json (gitignored) overrides board.example.json;
  *         YDB_API_BASE / YDB_DO_NAME env vars override either.
  */
@@ -55,14 +57,31 @@ export function requireToken(tok) {
   return t;
 }
 
+// Resolve the bearer for an acting ROLE: prefer YDB_TOKEN_<ROLE> (a per-role board identity scoped to
+// least-privilege caps), else fall back to the shared YDB_TOKEN. The fallback keeps a single-token setup
+// working unchanged; a missing per-role token is logged so a degraded (non-isolated) act is visible.
+// Role names map by upper-casing and turning '-' into '_': security-advisor → YDB_TOKEN_SECURITY_ADVISOR.
+export function resolveToken(role) {
+  if (role) {
+    const key = `YDB_TOKEN_${role.toUpperCase().replace(/-/g, "_")}`;
+    if (process.env[key]) return process.env[key];
+    if (process.env.YDB_TOKEN) {
+      process.stderr.write(`[board] ${key} not set → using shared YDB_TOKEN (no per-role identity) for role '${role}'\n`);
+    }
+  }
+  return requireToken();
+}
+
 export class BoardClient {
-  /** opts: { apiBase, doName, token }. Precedence per field: explicit opt > env var > config file. */
+  /** opts: { apiBase, doName, token, role }. Precedence per field: explicit opt > env var > config file.
+   *  token precedence: explicit opt.token > YDB_TOKEN_<ROLE> (if opt.role) > shared YDB_TOKEN. */
   constructor(opts = {}) {
     const needCfg = opts.apiBase == null || opts.doName == null;
     const cfg = needCfg ? loadConfig() : {};
     this.apiBase = opts.apiBase ?? process.env.YDB_API_BASE ?? cfg.apiBase;
     this.doName = opts.doName ?? process.env.YDB_DO_NAME ?? cfg.doName;
-    this.token = requireToken(opts.token);
+    this.role = opts.role ?? null; // acting board identity (per-role token); null → shared YDB_TOKEN
+    this.token = opts.token ?? resolveToken(this.role);
   }
 
   url(suffix) {

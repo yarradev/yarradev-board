@@ -40,13 +40,22 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
   stage needs `{p:"human_go"}`. If the board edge omits the gate, the act commits with **no** enforcement
   (e.g. a promote with no human GO — an authority bypass); if the edge is missing entirely, the MOVE 422s
   with no `blocked_by` and the advance/promote silently never fires.
-- **Board bearer token — pass it INLINE, never export it.** The token (shaped `<token_id>.<secret>`)
-  authenticates you to the board; it is **not** a Claude credential. The user gives it to you at loop
-  start. Pass it inline on **every** script call — `YDB_TOKEN=<token> node $S/<script>.mjs …` — so it
-  lives only in that one process. Do **NOT** `export` it to the shell, write it to a file, or place it
-  in a subagent's prompt: role subagents have Bash and share this machine, so an exported or persisted
-  token is readable by them (`printenv` / `cat`) and would let a prompt-injected subagent forge acts
-  under your identity. (True per-subagent isolation = distinct board identities — a future increment.)
+- **Board bearer token(s) — pass INLINE, never export, never to a subagent.** A token (shaped
+  `<token_id>.<secret>`) authenticates you to the board; it is **not** a Claude credential. Pass it inline
+  on **every** script call so it lives only in that one process. Do **NOT** `export` it, write it to a
+  file, or place it in a subagent's prompt: role subagents have Bash and share this machine, so a
+  persisted token is readable by them (`printenv`/`cat`) and would let a prompt-injected subagent forge
+  acts under that identity.
+- **Per-role identities (least privilege).** Each act is posted under the **role that produced it**, via a
+  per-role token: the scripts read `YDB_TOKEN_<ROLE>` (upper-case, `-`→`_`: `YDB_TOKEN_DEVELOPER`,
+  `YDB_TOKEN_SECURITY_ADVISOR`, `YDB_TOKEN_ORCHESTRATOR`, `YDB_TOKEN_DESIGNER`, `YDB_TOKEN_TESTER`,
+  `YDB_TOKEN_RELEASER`, `YDB_TOKEN_HUMAN`), **falling back to the shared `YDB_TOKEN`** if a role's token
+  isn't set (the fallback is logged to stderr). You hold **all** the role tokens and the scripts select
+  the right one per act; **subagents still never see any token**. Mapping: `claim`/`clear-lease`/`escalate`
+  → orchestrator · `move`/`reject` → the **stage owner** (passed as the last arg) · `link-pr`/`push` →
+  developer · `veto`/`hold` → security-advisor · `promote` → releaser · `human-go`/`clear-veto` → human.
+  Inline the whole set at loop start, e.g. `YDB_TOKEN_ORCHESTRATOR=… YDB_TOKEN_DEVELOPER=… … node $S/…`
+  (or just `YDB_TOKEN=…` for a single-identity setup — everything falls back to it).
 
 ## Per-pass procedure (one /loop invocation)
 Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
@@ -65,8 +74,8 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
    **`advance`** — a mechanical gate (e.g. CI) is satisfied; MOVE with **no dispatch** (no subscription cost):
    1. `node $S/claim.mjs <id> <role> <pace.claimTtlS>` → keep `gen` (`ok:false` → log `claim-failed`, skip).
       (`role` is the mechanical stage's owner, carried on the `advance` line — don't hardcode `developer`.)
-   2. `node $S/move.mjs <id> <gen> <to>`. Committed → advanced. **422 `gate_blocked`** (CI flipped since the
-      list) → log, fall through to CLEAR; the next pass re-derives.
+   2. `node $S/move.mjs <id> <gen> <to> <role>` (posts under the stage owner's identity). Committed →
+      advanced. **422 `gate_blocked`** (CI flipped since the list) → log, fall through to CLEAR; next pass re-derives.
    3. `node $S/clear-lease.mjs <id> <gen>` — always.
 
    **`promote`** — a human-gated stage (the `staging→prod` production gate); advance ONLY on an accountable
@@ -91,8 +100,8 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
       judgement-style worker (its `advance`/`reject`/`question` verdict routes exactly like the others). The
       subagent returns a fenced ` ```json ` verdict and never touches the board.
    3. **PARSE** the last fenced ` ```json ` block and post the matching act with `<gen>`:
-      - judgement `status:"advance"` → `node $S/move.mjs <id> <gen> <to>`.
-      - judgement `status:"reject"` → `node $S/reject.mjs <id> <gen> <verdict.to>` (backward REJECT edge).
+      - judgement `status:"advance"` → `node $S/move.mjs <id> <gen> <to> <role>` (posts under the stage owner).
+      - judgement `status:"reject"` → `node $S/reject.mjs <id> <gen> <verdict.to> <role>` (backward REJECT edge).
         If it returns **422 `bounce budget exhausted`** the edge has thrashed too often → run
         `node $S/escalate.mjs <id> "bounce budget: <edge>"` (park for a human) instead of re-looping.
       - mechanical `status:"submitted"` `evidence:{repo, pr_number, head}` — choose the act by **`kind`**,

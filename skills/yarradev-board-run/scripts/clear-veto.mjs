@@ -12,6 +12,6 @@ if (!id) {
   console.error("usage: clear-veto.mjs <id>");
   process.exit(2);
 }
-const r = await new BoardClient().clearVeto(id);
+const r = await new BoardClient({ role: "human" }).clearVeto(id);
 process.stdout.write(JSON.stringify(r) + "\n");
 process.exit(r.ok ? 0 : 1);

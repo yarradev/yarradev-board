@@ -14,6 +14,6 @@ if (!id || gen === undefined || !repo || !pr || !head) {
   console.error("usage: link-pr.mjs <id> <gen> <repo> <pr_number> <head>");
   process.exit(2);
 }
-const r = await new BoardClient().linkPr(id, Number(gen), { repo, pr_number: Number(pr), head });
+const r = await new BoardClient({ role: "developer" }).linkPr(id, Number(gen), { repo, pr_number: Number(pr), head });
 process.stdout.write(JSON.stringify(r) + "\n");
 process.exit(r.ok ? 0 : 1);

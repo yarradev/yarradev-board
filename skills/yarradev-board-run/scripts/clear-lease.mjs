@@ -11,6 +11,6 @@ if (!id || gen === undefined) {
   console.error("usage: clear-lease.mjs <id> <gen>");
   process.exit(2);
 }
-const r = await new BoardClient().clearLease(id, Number(gen));
+const r = await new BoardClient({ role: "orchestrator" }).clearLease(id, Number(gen));
 process.stdout.write(JSON.stringify(r) + "\n");
 process.exit(r.ok ? 0 : 1);

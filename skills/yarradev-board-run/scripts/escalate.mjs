@@ -13,6 +13,6 @@ if (!id) {
   console.error("usage: escalate.mjs <id> [reason...]");
   process.exit(2);
 }
-const r = await new BoardClient().escalate(id, rest.join(" "));
+const r = await new BoardClient({ role: "orchestrator" }).escalate(id, rest.join(" "));
 process.stdout.write(JSON.stringify(r) + "\n");
 process.exit(r.ok ? 0 : 1);

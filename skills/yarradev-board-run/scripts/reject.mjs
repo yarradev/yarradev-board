@@ -7,11 +7,12 @@
  */
 import { BoardClient } from "./lib.mjs";
 
-const [id, gen, to] = process.argv.slice(2);
+const [id, gen, to, role] = process.argv.slice(2);
 if (!id || gen === undefined || !to) {
-  console.error("usage: reject.mjs <id> <gen> <to>");
+  console.error("usage: reject.mjs <id> <gen> <to> [role]");
   process.exit(2);
 }
-const r = await new BoardClient().reject(id, Number(gen), to);
+// `role` = the stage owner posting the REJECT → its per-role identity; omit to use the shared YDB_TOKEN.
+const r = await new BoardClient({ role }).reject(id, Number(gen), to);
 process.stdout.write(JSON.stringify(r) + "\n");
 process.exit(r.ok ? 0 : 1);

@@ -12,6 +12,6 @@ if (!id) {
   console.error("usage: human-go.mjs <id>");
   process.exit(2);
 }
-const r = await new BoardClient().humanGo(id);
+const r = await new BoardClient({ role: "human" }).humanGo(id);
 process.stdout.write(JSON.stringify(r) + "\n");
 process.exit(r.ok ? 0 : 1);

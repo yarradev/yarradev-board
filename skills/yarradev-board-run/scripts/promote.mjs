@@ -14,7 +14,7 @@ if (!id || !to) {
   console.error("usage: promote.mjs <id> <to>");
   process.exit(2);
 }
-const client = new BoardClient();
+const client = new BoardClient({ role: "releaser" });
 const card = await client.getCard(id);
 if (!card || card.current_gen == null) {
   process.stdout.write(JSON.stringify({ ok: false, error: "no such card" }) + "\n");

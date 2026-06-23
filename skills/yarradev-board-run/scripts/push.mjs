@@ -13,6 +13,6 @@ if (!id || gen === undefined || !repo || !pr || !head) {
   console.error("usage: push.mjs <id> <gen> <repo> <pr_number> <head>");
   process.exit(2);
 }
-const r = await new BoardClient().push(id, Number(gen), { repo, pr_number: Number(pr), head });
+const r = await new BoardClient({ role: "developer" }).push(id, Number(gen), { repo, pr_number: Number(pr), head });
 process.stdout.write(JSON.stringify(r) + "\n");
 process.exit(r.ok ? 0 : 1);

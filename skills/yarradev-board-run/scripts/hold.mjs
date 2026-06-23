@@ -11,6 +11,6 @@ if (!id || !head) {
   console.error("usage: hold.mjs <id> <head> [reason...]");
   process.exit(2);
 }
-const r = await new BoardClient().hold(id, rest.join(" "), head);
+const r = await new BoardClient({ role: "security-advisor" }).hold(id, rest.join(" "), head);
 process.stdout.write(JSON.stringify(r) + "\n");
 process.exit(r.ok ? 0 : 1);

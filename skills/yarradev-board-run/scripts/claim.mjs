@@ -11,6 +11,7 @@ if (!id || !role) {
   console.error("usage: claim.mjs <id> <role> [ttl_s]");
   process.exit(2);
 }
-const r = await new BoardClient().claim(id, role, ttl ? Number(ttl) : undefined);
+// The orchestrator identity posts CLAIM; `role` (argv) is the LEASE role (which worker will work it).
+const r = await new BoardClient({ role: "orchestrator" }).claim(id, role, ttl ? Number(ttl) : undefined);
 process.stdout.write(JSON.stringify(r) + "\n");
 process.exit(r.ok ? 0 : 1);
