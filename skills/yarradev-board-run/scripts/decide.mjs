@@ -30,6 +30,12 @@ export function decide(card, lc, nowMs, budgets = DEFAULT_BUDGETS) {
   const leased = card.lease_expiry_ts != null && card.lease_expiry_ts > nowMs;
   if (leased) return { kind: "noop", reason: "leased" }; // a worker holds it this pass — never double-spawn
 
+  // Security-advisor verdicts dominate: a vetoed/held card does NO further work (no quota) until an
+  // accountable human CLEARs it. (The board's no_open_veto/no_open_hold gate is the true enforcer on the
+  // MOVE; this just avoids futile advance/respawn attempts. veto_held is the persistent denormalized flag.)
+  if (card.veto_held) return { kind: "noop", reason: "veto-open" };
+  if (card.hold_open) return { kind: "noop", reason: "hold-open" };
+
   // Global thrash backstop (board-counted on MOVE/REJECT) → park for a human past the budget.
   if ((card.transitions_count ?? 0) >= budgets.transition_budget) {
     return { kind: "escalate", reason: "transition-budget" };

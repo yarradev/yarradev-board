@@ -99,6 +99,8 @@ export class BoardClient {
       lease_role: i.lease_role ?? null, // informational (decide uses stage.owner, not this)
       transitions_count: i.transitions_count ?? 0, // board-counted thrash tally (MOVE/REJECT) → transition budget
       parked_since_ts: i.parked_since_ts ?? 0, // entry-to-state ts → time-bounds the in-place CI-failure loop
+      veto_held: i.veto_held ?? false, // security-advisor VETO open → parked until an accountable human CLEAR_VETOs
+      hold_open: i.hold_open ?? false, // advisor HOLD open → parked until a human CLEARs
     }));
   }
 
@@ -144,6 +146,24 @@ export class BoardClient {
 
   async clearLease(id, gen) {
     const { status, outcome } = await this.act({ type: "CLEAR_LEASE", item_id: id, gen });
+    return { ok: outcome === "committed", status, outcome };
+  }
+
+  // Security-advisor verdicts (gen-exempt). `data.role` keys advisor_state; `data.head` = the reviewed
+  // linked head (head-freshness). VETO/HOLD set veto_held/hold_open → the no_open_veto/no_open_hold gates
+  // block dev→test and decide() parks the card, until an accountable human CLEAR_VETOs. The orchestrator
+  // posts these from the advisor's verdict.
+  async veto(id, reason = "", head = null) {
+    const { status, outcome } = await this.act({ type: "VETO", item_id: id, data: { role: "security-advisor", reason, head } });
+    return { ok: outcome === "committed", status, outcome };
+  }
+  async hold(id, reason = "", head = null) {
+    const { status, outcome } = await this.act({ type: "HOLD", item_id: id, data: { role: "security-advisor", reason, head } });
+    return { ok: outcome === "committed", status, outcome };
+  }
+  // Accountable-human clear: the board authorizes CLEAR_VETO only for a clear_authority signatory.
+  async clearVeto(id) {
+    const { status, outcome } = await this.act({ type: "CLEAR_VETO", item_id: id, data: { role: "security-advisor" } });
     return { ok: outcome === "committed", status, outcome };
   }
 }

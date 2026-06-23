@@ -78,6 +78,13 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
         - `kind:"respawn"` (fix) → `node $S/push.mjs <id> <gen> <repo> <pr_number> <head>`.
         - **Do NOT MOVE** — the card waits for CI; a later `advance` pass moves it. (A PUSH with no prior
           LINK_PR strands CI, so the work→LINK_PR / respawn→PUSH split is load-bearing.)
+        - **Advisor review** (stages with a configured advisor): after the LINK_PR/PUSH, dispatch
+          `subagent_type:"yarradev-board:security-advisor"` with `{ doName, cardId, repo, branch, head,
+          watch_paths }`. Parse its `{status, reason, head}`: `veto` → `node $S/veto.mjs <id> <head> "<reason>"`;
+          `hold` → `node $S/hold.mjs <id> <head> "<reason>"`; `advice`/`clean` → log only. A VETO/HOLD parks
+          the card (`decide` noops `veto-open`/`hold-open`, and the board's `no_open_veto`/`no_open_hold`
+          gate blocks dev→test) until an accountable human runs `clear-veto.mjs` (a `clear_authority`
+          signatory) — *you flag; a human signs off*.
       - `status:"question"` → `node $S/escalate.mjs <id> "<the question>"` (park for a human).
         `"error"` / **no parseable block** → post nothing; log; retry next pass.
    4. **CLEAR_LEASE — always:** `node $S/clear-lease.mjs <id> <gen>` in **every** branch.

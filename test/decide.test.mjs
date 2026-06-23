@@ -65,3 +65,12 @@ test("decide (budgets): transition-budget + ci-stall escalate; otherwise normal"
   // blocked (parked via ASK) is still skipped regardless of budget
   assert.deepEqual(decide(card({ state: "spec", blocked: true, transitions_count: 5 }), LC, 1000, B), { kind: "noop", reason: "blocked" });
 });
+
+test("decide (advisor): VETO/HOLD park the card; cleared resumes", () => {
+  // VETO open dominates ci_green → parked
+  assert.deepEqual(decide(mcard({ veto_held: true, linked_head_sha: "abc", ci_rollup: "success" }), MLC, 1000), { kind: "noop", reason: "veto-open" });
+  // HOLD open → parked
+  assert.deepEqual(decide(mcard({ hold_open: true, linked_head_sha: "abc", ci_rollup: "success" }), MLC, 1000), { kind: "noop", reason: "hold-open" });
+  // cleared (no veto/hold) + ci green → advance
+  assert.deepEqual(decide(mcard({ linked_head_sha: "abc", ci_rollup: "success" }), MLC, 1000), { kind: "advance", to: "test" });
+});

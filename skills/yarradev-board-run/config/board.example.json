@@ -3,7 +3,13 @@
   "doName": "acme:flow",
   "lifecycle": {
     "spec": { "owner": "designer", "to": "dev" },
-    "dev": { "owner": "developer", "to": "test", "gate": "mechanical" },
+    "dev": {
+      "owner": "developer", "to": "test", "gate": "mechanical",
+      "advisors": [
+        { "role": "security-advisor", "joins_at": ["dev"],
+          "watch_paths": ["**/auth/**", "**/*secret*", "**/*credential*", "**/.env*", "**/*.pem", "**/*.key", "**/payments/**", "**/billing/**"] }
+      ]
+    },
     "test": { "owner": "tester", "to": "done" },
     "done": { "owner": "", "to": null }
   },
