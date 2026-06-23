@@ -2,7 +2,8 @@
 
 A Claude Code plugin: a **reconciliation-loop orchestrator** that drives a **yarradev HTTP board**
 (the Cloudflare Durable Object board in `yarradev-platform`) and dispatches **role subagents**
-(designer → developer → tester) via the **Agent tool** — running on **your own Claude subscription**.
+(designer → developer → tester, plus a **security-advisor** and a **human production gate**) via the
+**Agent tool** — running on **your own Claude subscription**.
 
 You install the plugin, point it at your board, and run `/loop … /yarradev-board:yarradev-board-run`.
 Each pass it claims a ready card, dispatches the stage's role subagent to do the real work, and posts
@@ -35,15 +36,23 @@ Or load locally during development by enabling the plugin from this checkout.
 1. Copy the config template and edit it (no secret goes here):
    ```
    cp skills/yarradev-board-run/config/board.example.json skills/yarradev-board-run/config/board.json
-   # set apiBase, doName, and the judgement lifecycle / pace
+   # set apiBase, doName, and the lifecycle / pace / budgets
    ```
 2. Have your board token ready (shaped `<token_id>.<secret>`). Give it to the orchestrator at loop
    start; it is passed **inline per board call** (`YDB_TOKEN=<token> node …`) and **never exported
    persistently** — role subagents share the machine and could read an exported token.
 
-`config/board.json` is gitignored. Defaults (`board.example.json`): `apiBase http://localhost:8802`,
-`doName acme:flow`, lifecycle `spec→dev→test→done`, pace `{ maxCardsPerPass:1, claimTtlS:1800,
-minLoopIntervalS:300 }`.
+`config/board.json` is gitignored. `board.example.json` ships the **full lifecycle**
+`spec→dev→test→done→prod`: `spec` (judgement → designer), `dev` (mechanical **CI gate** + a
+**security-advisor** watching protected paths → developer), `test` (judgement → tester), `done→prod`
+(**human GO** required), `prod` (terminal). Defaults: `apiBase http://localhost:8802`,
+`doName acme:flow`, pace `{ maxCardsPerPass:1, claimTtlS:1800, minLoopIntervalS:300 }`, budgets
+`{ transition_budget:50, bounce_limit:3, respawn_window_ms:60000 }`.
+
+> The plugin lifecycle's `gate` tags (`mechanical`/`human`) are **routing hints for `decide()` only**.
+> The board's real enforcement is the compiled `GateExpr` on each transition edge, and the two must
+> agree (see the demo's board-machine step). If a board edge omits the gate, the act commits with no
+> enforcement; if the edge is missing, the MOVE 422s with no `blocked_by`.
 
 ## Run
 
@@ -55,70 +64,82 @@ minLoopIntervalS:300 }`.
 
 ## Local end-to-end demo (against the platform stack)
 
-1. **Boot the platform stack** (in the `yarradev-platform` repo): `wrangler dev` the **board** (:8801)
-   then the **api** (:8802) with `--persist-to /tmp/yd-state`.
-2. **Create the board + an orchestrator identity** via the admin path: `POST /boards`
-   (header `x-yd-admin: local-admin`) with a machine whose transitions are the forward edges
-   `spec→dev→test→done` **plus the backward edges declared as REJECT** — `{type:"REJECT",from:"test",
-   to:"dev"}` and `{type:"REJECT",from:"dev",to:"spec"}` (a MOVE on a REJECT edge is rejected). Grant
-   the orchestrator identity caps `CREATE / CLAIM / MOVE / REJECT / CLEAR_LEASE`. Token: `orch1.s3cret`.
-3. **Seed a card:**
+`board.example.json` ships the full lifecycle, so this demo exercises all four gates (judgement, CI,
+advisor VETO, human GO). Boot the **board** (:8801), **api** (:8802), and **webhook** (:8803) in the
+`yarradev-platform` repo (`wrangler dev`, all `--persist-to /tmp/yd-state`, and
+`--var GITHUB_APP_WEBHOOK_SECRET=local-whsec` on the webhook).
+
+1. **Create the board machine** (admin `POST /boards`, header `x-yd-admin: local-admin`) to **mirror**
+   the plugin lifecycle:
+   - forward edges `spec→dev`, `test→done`; backward edges as REJECT (`{type:"REJECT",from:"test",
+     to:"dev"}`, `{type:"REJECT",from:"dev",to:"spec"}`) — a MOVE on a REJECT edge is rejected;
+   - the **gated** edges: `{from:"dev",to:"test",gate:{all:[{p:"ci_green"},{p:"no_open_veto"},
+     {p:"no_open_hold"}]}}` and `{from:"done",to:"prod",gate:{p:"human_go"}}`;
+   - `terminal:["prod"]`.
+2. **Identities & caps:**
+   - orchestrator `orch1.s3cret` — caps `CREATE / CLAIM / MOVE / REJECT / CLEAR_LEASE / LINK_PR / PUSH /
+     VETO / HOLD`;
+   - a `{kind:"system",role:"github-app",act_type:"INGEST_FACT"}` cap (CI fact ingest);
+   - a `clear_authority` signatory with `CLEAR_VETO` (an accountable human clears an advisor VETO/HOLD);
+   - a `byKind:"human"` identity `human1.s3cret` (role `approver`) with an `{kind:"human",
+     role:"approver",act_type:"HUMAN_GO"}` cap. **HUMAN_GO needs BOTH the cap grant AND a human
+     identity** — an agent is denied 403, so it cannot self-approve a release.
+3. **Seed CI routing** so signed checks reach the board: a CATALOG `installation` row + `repo_board`
+   (`owner/repo → acme:flow`) — `wrangler d1 execute yarradev-catalog --local --persist-to /tmp/yd-state
+   --command "INSERT OR IGNORE INTO repo_board ..."`.
+4. **Seed a card:**
    `POST /boards/acme:flow/acts {"type":"CREATE","item_id":"card-1","data":{"state":"spec","title":"<intent>"}}`.
-4. In the Claude Code session, give the orchestrator the board token (`orch1.s3cret`) in your launch
-   message — it inlines it per call; don't `export` it — set `/model sonnet` + `/effort low`, then
-   `/loop 30s /yarradev-board:yarradev-board-run`.
-5. Watch: designer → MOVE spec→dev; developer (own worktree, real commit, pushes branch) → dev→test;
-   tester (fetches the branch, validates) → test→done. Confirm
-   `GET /boards/acme:flow/cards/card-1` → `state: done`.
-
-## Local mechanical-gate demo (Slice 2)
-
-Proves the `dev→test` CI gate **without real GitHub** (you sign your own `check_run`). Boot board(:8801)
-+ api(:8802) + **webhook(:8803)** (`--var GITHUB_APP_WEBHOOK_SECRET=local-whsec`), all
-`--persist-to /tmp/yd-state`.
-
-1. **Create a CI-gated board** (admin `POST /boards`): machine transition `{from:"dev",to:"test",
-   gate:{p:"ci_green"}}`, and orchestrator caps including `LINK_PR`/`PUSH` plus a
-   `{kind:"system",role:"github-app",act_type:"INGEST_FACT"}` cap.
-2. **Seed routing** in CATALOG: an `installation` row + `repo_board(installation, owner/repo → your
-   board)` — `wrangler d1 execute yarradev-catalog --local --persist-to /tmp/yd-state --command
-   "INSERT OR IGNORE INTO repo_board ..."`.
-3. **Run the loop.** A `dev` card with no PR → developer (mechanical mode) pushes a branch and returns
-   `submitted{repo,pr_number,head}`; the orchestrator posts `LINK_PR`. A MOVE dev→test now is **422
-   `gate_blocked` `ci_green`** (CI absent).
-4. **Deliver CI** — a signed `check_run{head_sha:<head>, conclusion:"success"}` to `:8803`
-   (header `x-hub-signature-256` = HMAC-SHA256 of the body with the webhook secret) → routed via
-   `installation`→`repo_board` → board → `ci_rollup=success`.
-5. Next pass: `decide → advance` → orchestrator MOVEs dev→test (gate passes) — **no developer
-   re-spawn**. A `conclusion:"failure"` → `ci_rollup=failure` → `decide → respawn` → developer fixes,
-   pushes a new head, orchestrator `PUSH`es it; a later green `check_run` on the new head advances (a
-   stale `check_run` on the old head is dropped).
-
-Opt-in integration test against this stack:
-`YDB_IT=1 YDB_TOKEN=<token> YDB_DO_NAME=<ci-gated-board> YDB_WHSECRET=<secret> npm test`
-(exercises LINK_PR → MOVE 422 `ci_green` → signed `check_run` → advance).
+5. **Run the loop:** give the orchestrator `orch1.s3cret` in your launch message (it inlines it per call;
+   don't `export` it), set `/model sonnet` + `/effort low`, then `/loop 30s
+   /yarradev-board:yarradev-board-run`, and watch each gate:
+   - **spec→dev** — designer writes the spec → MOVE.
+   - **dev** (mechanical + advisor) — developer (own worktree, real commit, pushes a branch) returns
+     `submitted{repo,pr_number,head}` → orchestrator `LINK_PR`s; the security-advisor reviews the diff
+     against its `watch_paths` and may `VETO`/`HOLD`. A MOVE dev→test is **422** until **CI is green AND
+     there is no open veto/hold**. Deliver CI: a signed `check_run{head_sha:<head>,conclusion:"success"}`
+     to :8803 (`x-hub-signature-256` = HMAC-SHA256 of the body with the secret) → routed
+     `installation`→`repo_board`→board → `ci_rollup=success`. Clear any advisor VETO via the
+     `clear_authority` signatory (`clear-veto.mjs`). Next pass: `advance` → MOVE dev→test, **no developer
+     re-spawn**. (A `conclusion:"failure"` → `respawn` → developer fixes, PUSH a new head; a later green
+     `check_run` on the new head advances; a stale one on the old head is dropped.)
+   - **test→done** — tester fetches the branch, validates → MOVE.
+   - **done→prod** (human GO) — the orchestrator attempts `promote` each pass and logs **422 `human_go`**
+     (no GO yet). A human runs `node $S/human-go.mjs card-1` as `human1.s3cret`; the next pass's promote
+     commits. Confirm `GET /boards/acme:flow/cards/card-1` → **`state: prod`**.
 
 ## Tests
 
 ```
 npm test                                    # pure decide() unit tests (offline)
-YDB_IT=1 YDB_TOKEN=orch1.s3cret npm test    # also runs the live HTTP-rail test against the seeded board above
+YDB_IT=1 YDB_TOKEN=orch1.s3cret YDB_DO_NAME=acme:flow YDB_WHSECRET=local-whsec npm test
 ```
 
-The live LLM dispatch (subagents doing real work) is exercised only by the demo runbook above — it
-consumes your subscription in-session and can't be unit-tested. Automated tests cover the
-deterministic rail (scripts + gen-fence/gate contract) only.
+The second form also runs the live HTTP-rail tests against the seeded board (LINK_PR → MOVE 422
+`ci_green` → signed `check_run` → advance). The live **LLM dispatch** (subagents doing real work) is
+exercised only by the demo runbook above — it consumes your subscription in-session and can't be
+unit-tested. Automated tests cover the deterministic rail (scripts + gen-fence/gate contract) only.
 
-## Scope (Slice 1) and what's next
+## Scope and what's next
 
-**This slice:** the orchestrator skill + `designer`/`developer`/`tester` agents driving the judgement
-lifecycle `spec→dev→test→done` (with `REJECT` backward edges); the orchestrator holds the token and
-posts `CLAIM` / `MOVE` / `REJECT` / `CLEAR_LEASE` from each subagent's returned verdict (one shared
-identity). The card `title` carries intent to every role; the tester finds the developer's work by the
-`cardId`-encoded branch. Persisting richer cross-stage context (the designer's plan → the developer)
-is Slice 2.
+**Shipped** — the orchestrator skill + `designer`/`developer`/`tester` + `security-advisor` agents
+driving the full lifecycle `spec→dev→test→done→prod`:
 
-**Slice 2 (next):** the CI/mechanical gate (developer opens a PR → wait for `ci_green` via the GitHub
-webhook → auto-advance), `RENEW` for long jobs, the `security-advisor` VETO + human-`CLEAR`, bounce/
-transition budgets, per-role board identities, multi-card concurrency, and the analyst/releaser + epic
-tier.
+- **judgement** stages (spec, test) — the subagent's verdict drives MOVE/REJECT (backward edges are
+  REJECT; intent rides the card `title`; the tester finds the dev branch by `cardId`);
+- a **mechanical CI gate** on `dev` — developer opens a PR (`LINK_PR`), the board waits for `ci_green`
+  via the GitHub webhook, then auto-advances (no re-spawn); a red CI re-spawns the developer (`PUSH`),
+  time-bounded by `respawn_window_ms`;
+- **bounce / transition budgets** — `decide()` parks a card for a human (`escalate` via `ASK`) when the
+  board's per-edge bounce budget or the global `transition_budget` is exhausted;
+- a **security-advisor with VETO/HOLD** — joins `dev` when changed files match its `watch_paths`; a VETO
+  blocks dev→test (board `no_open_veto` gate + a `decide` park) until a `clear_authority` signatory
+  CLEARs it;
+- a **human production gate** — `done→prod` requires a `byKind:human` `HUMAN_GO` (`promote`); agents
+  cannot self-approve a release.
+
+The orchestrator holds the board token (inlined per call) and posts every act under one shared identity
+from each subagent's returned verdict.
+
+**Next:** per-role board identities (true per-subagent isolation), a staging stage + releaser agent,
+richer cross-stage context persistence (designer's plan → developer), `RENEW` for long jobs, multi-card
+concurrency, the analyst/epic tier, publishing the plugin, and the Cloudflare deploy.

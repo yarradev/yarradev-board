@@ -3,7 +3,9 @@
  * promote.mjs <id> <to> — advance a HUMAN-GATED stage by MOVEing at the card's CURRENT gen (no CLAIM, so
  * the human's HUMAN_GO — which is gen-stamped — stays valid; a CLAIM bump would invalidate it). The
  * board's human_go gate 422s until an accountable human has posted HUMAN_GO (run human-go.mjs as a human
- * identity). Prints { ok, status, outcome, blocked_by }. Exit 0 on committed, 1 otherwise.
+ * identity). Presupposes the card was claimed at least once (current_gen>=1); a never-claimed card
+ * (gen 0) returns 409 fenced (gen-required), not the human_go 422. Prints { ok, status, outcome,
+ * blocked_by }. Exit 0 on committed, 1 otherwise.
  */
 import { BoardClient } from "./lib.mjs";
 

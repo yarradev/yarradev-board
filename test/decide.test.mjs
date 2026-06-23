@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { decide } from "../skills/yarradev-board-run/scripts/decide.mjs";
 
 const LC = {
@@ -40,7 +41,7 @@ test("decide (mechanical dev): work/advance/respawn/wait by linked_head_sha + ci
   assert.deepEqual(decide(mcard({ linked_head_sha: "abc", ci_rollup: "absent" }), MLC, 1000), { kind: "noop", reason: "ci-absent" });
   assert.deepEqual(decide(mcard({ linked_head_sha: "abc", ci_rollup: "blocked" }), MLC, 1000), { kind: "noop", reason: "ci-blocked" });
   // CI green -> advance (MOVE, no spawn)
-  assert.deepEqual(decide(mcard({ linked_head_sha: "abc", ci_rollup: "success" }), MLC, 1000), { kind: "advance", to: "test" });
+  assert.deepEqual(decide(mcard({ linked_head_sha: "abc", ci_rollup: "success" }), MLC, 1000), { kind: "advance", role: "developer", to: "test" });
   // CI red, no fresh lease -> respawn the developer to fix
   assert.deepEqual(decide(mcard({ linked_head_sha: "abc", ci_rollup: "failure" }), MLC, 1000), { kind: "respawn", role: "developer" });
   // CI red BUT a fresh lease is held (developer actively fixing) -> wait; do NOT double-spawn (step-4 precedence)
@@ -72,7 +73,7 @@ test("decide (advisor): VETO/HOLD park the card; cleared resumes", () => {
   // HOLD open → parked
   assert.deepEqual(decide(mcard({ hold_open: true, linked_head_sha: "abc", ci_rollup: "success" }), MLC, 1000), { kind: "noop", reason: "hold-open" });
   // cleared (no veto/hold) + ci green → advance
-  assert.deepEqual(decide(mcard({ linked_head_sha: "abc", ci_rollup: "success" }), MLC, 1000), { kind: "advance", to: "test" });
+  assert.deepEqual(decide(mcard({ linked_head_sha: "abc", ci_rollup: "success" }), MLC, 1000), { kind: "advance", role: "developer", to: "test" });
 });
 
 const HLC = {
@@ -87,4 +88,30 @@ test("decide (human gate): promote a human-gated stage; terminal + veto + blocke
   assert.deepEqual(decide(hcard({ state: "prod" }), HLC, 1000), { kind: "noop", reason: "terminal" });
   assert.deepEqual(decide(hcard({ veto_held: true }), HLC, 1000), { kind: "noop", reason: "veto-open" });
   assert.deepEqual(decide(hcard({ blocked: true }), HLC, 1000), { kind: "noop", reason: "blocked" });
+});
+
+// Pin the SHIPPED config (config/board.example.json) — not a hand-written fixture — to decide(), so a
+// state rename (prod→production) or a reshape of `done` (back to terminal) is caught by the suite.
+const EXAMPLE = JSON.parse(
+  readFileSync(new URL("../skills/yarradev-board-run/config/board.example.json", import.meta.url), "utf8")
+);
+
+test("decide (shipped board.example.json): full spec→dev→test→done→prod lifecycle routes correctly", () => {
+  const lc = EXAMPLE.lifecycle;
+  assert.deepEqual(Object.keys(lc), ["spec", "dev", "test", "done", "prod"]); // shape is pinned
+  const c = (o) => ({ id: "x", blocked: false, lease_expiry_ts: null, current_gen: 1, ...o });
+  // spec: judgement → designer
+  assert.deepEqual(decide(c({ state: "spec" }), lc, 1000), { kind: "work", role: "designer", to: "dev" });
+  // dev: mechanical + advisor, no PR yet → work the developer
+  assert.deepEqual(decide(c({ state: "dev", linked_head_sha: null }), lc, 1000), { kind: "work", role: "developer", to: "test" });
+  // dev: PR linked + CI green → advance, carrying the stage owner as role
+  assert.deepEqual(decide(c({ state: "dev", linked_head_sha: "abc", ci_rollup: "success" }), lc, 1000), { kind: "advance", role: "developer", to: "test" });
+  // dev: vetoed despite green CI → advisor dominates (this park is load-bearing on the advance path)
+  assert.deepEqual(decide(c({ state: "dev", linked_head_sha: "abc", ci_rollup: "success", veto_held: true }), lc, 1000), { kind: "noop", reason: "veto-open" });
+  // test: judgement → tester
+  assert.deepEqual(decide(c({ state: "test" }), lc, 1000), { kind: "work", role: "tester", to: "done" });
+  // done: human-gated (NOT terminal anymore) → promote
+  assert.deepEqual(decide(c({ state: "done" }), lc, 1000), { kind: "promote", to: "prod" });
+  // prod: terminal
+  assert.deepEqual(decide(c({ state: "prod" }), lc, 1000), { kind: "noop", reason: "terminal" });
 });

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /*
  * list-ready.mjs — print one JSON line per actionable card:
- *   { "kind":"work"|"advance"|"respawn"|"escalate", "id", "state", "role"?, "to"?, "reason"?, "title" }
- * `work` carries role+to; `advance` carries to; `respawn` carries role; `escalate` carries reason
- * (park the card for a human — budget exhausted / CI stalled). `title` is the card's intent. The
+ *   { "kind":"work"|"advance"|"respawn"|"escalate"|"promote", "id", "state", "role"?, "to"?, "reason"?, "title" }
+ * `work` carries role+to; `advance` carries role+to; `respawn` carries role; `promote` carries to
+ * (human-gated stage); `escalate` carries reason (budget exhausted / CI stalled). `title` is the intent. The
  * generation is NOT emitted (acts use only the gen returned by CLAIM). Non-actionable cards
  * (terminal/blocked/leased/ci-pending/ci-absent/…) are logged to stderr and skipped.
  */

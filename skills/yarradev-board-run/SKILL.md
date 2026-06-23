@@ -1,6 +1,6 @@
 ---
 name: yarradev-board-run
-description: The yarradev board orchestrator — a reconciliation loop that drives every ready card through the judgement lifecycle (spec→dev→test→done) by reading a yarradev HTTP board, claiming a lease, dispatching the stage's role subagent via the Agent tool, parsing its verdict, and posting the resulting MOVE. Run continuously via /loop.
+description: The yarradev board orchestrator — a reconciliation loop that drives every ready card through the lifecycle (spec→dev→test→done→prod, with mechanical CI, security-advisor, and human-GO gates) by reading a yarradev HTTP board, claiming a lease, dispatching the stage's role subagent via the Agent tool, parsing its verdict, and posting the resulting act. Run continuously via /loop.
 ---
 
 # yarradev-board-run — the orchestrator
@@ -30,6 +30,14 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
 - Board config (apiBase, doName, lifecycle, pace, budgets): `…/config/board.json` — copy it from
   `board.example.json` and edit (a partial `board.json` merges over the template). It holds **no secret**.
   `budgets` = `{ transition_budget, bounce_limit, respawn_window_ms, per_edge_overrides }` (thrash caps).
+- **Lifecycle `gate` tags are plugin-side routing hints — not the enforcer.** A stage's `gate` only tells
+  `decide()` how to route (`mechanical` → CI advance/respawn; `human` → promote; default → dispatch the
+  owner for a judgement verdict). The board's REAL enforcement is the compiled `GateExpr` on each
+  transition edge, and the two MUST agree: a `gate:"mechanical"` stage that also has an advisor needs its
+  forward edge to declare `{all:[{p:"ci_green"},{p:"no_open_veto"},{p:"no_open_hold"}]}`; a `gate:"human"`
+  stage needs `{p:"human_go"}`. If the board edge omits the gate, the act commits with **no** enforcement
+  (e.g. a promote with no human GO — an authority bypass); if the edge is missing entirely, the MOVE 422s
+  with no `blocked_by` and the advance/promote silently never fires.
 - **Board bearer token — pass it INLINE, never export it.** The token (shaped `<token_id>.<secret>`)
   authenticates you to the board; it is **not** a Claude credential. The user gives it to you at loop
   start. Pass it inline on **every** script call — `YDB_TOKEN=<token> node $S/<script>.mjs …` — so it
@@ -42,10 +50,10 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
 Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
 
 1. **List ready cards:** `node $S/list-ready.mjs` → one JSON line per actionable card:
-   `{ "kind":"work"|"advance"|"respawn"|"escalate", "id", "state", "role"?, "to"?, "reason"?, "title" }`.
-   `work` carries role+to; `advance` carries to; `respawn` carries role; `escalate` carries reason (a
-   budget is exhausted / CI stalled — park for a human). Waiting cards (terminal/blocked/leased/
-   ci-pending/ci-absent/…) are logged to stderr and skipped.
+   `{ "kind":"work"|"advance"|"respawn"|"promote"|"escalate", "id", "state", "role"?, "to"?, "reason"?, "title" }`.
+   `work` carries role+to; `advance` carries role+to; `respawn` carries role; `promote` carries to (a
+   human-gated stage); `escalate` carries reason (a budget is exhausted / CI stalled — park for a human).
+   Waiting cards (terminal/blocked/leased/ci-pending/ci-absent/…) are logged to stderr and skipped.
 2. **For each actionable card, sequentially, up to `pace.maxCardsPerPass` (default 1), branch on `kind`:**
 
    **`escalate`** — a budget is exhausted / CI is stalled; park for a human (**no CLAIM, no dispatch, no quota**):
@@ -53,7 +61,8 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
    2. Log. The card is now parked; `list-ready` skips it until a human posts an `ANSWER` to resume.
 
    **`advance`** — a mechanical gate (e.g. CI) is satisfied; MOVE with **no dispatch** (no subscription cost):
-   1. `node $S/claim.mjs <id> developer <pace.claimTtlS>` → keep `gen` (`ok:false` → log `claim-failed`, skip).
+   1. `node $S/claim.mjs <id> <role> <pace.claimTtlS>` → keep `gen` (`ok:false` → log `claim-failed`, skip).
+      (`role` is the mechanical stage's owner, carried on the `advance` line — don't hardcode `developer`.)
    2. `node $S/move.mjs <id> <gen> <to>`. Committed → advanced. **422 `gate_blocked`** (CI flipped since the
       list) → log, fall through to CLEAR; the next pass re-derives.
    3. `node $S/clear-lease.mjs <id> <gen>` — always.
@@ -87,7 +96,8 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
           LINK_PR strands CI, so the work→LINK_PR / respawn→PUSH split is load-bearing.)
         - **Advisor review** (stages with a configured advisor): after the LINK_PR/PUSH, dispatch
           `subagent_type:"yarradev-board:security-advisor"` with `{ doName, cardId, repo, branch, head,
-          watch_paths }`. Parse its `{status, reason, head}`: `veto` → `node $S/veto.mjs <id> <head> "<reason>"`;
+          watch_paths }`. Parse its `{status, head, reason?}` (`reason` accompanies veto/hold/advice; the
+          `clean` verdict omits it): `veto` → `node $S/veto.mjs <id> <head> "<reason>"`;
           `hold` → `node $S/hold.mjs <id> <head> "<reason>"`; `advice`/`clean` → log only. A VETO/HOLD parks
           the card (`decide` noops `veto-open`/`hold-open`, and the board's `no_open_veto`/`no_open_hold`
           gate blocks dev→test) until an accountable human runs `clear-veto.mjs` (a `clear_authority`
@@ -117,10 +127,14 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
 | CLAIM | 409 fenced (stale gen / already leased) | log `claim-failed`, skip card; next pass re-reconciles |
 | Dispatch | subagent error / timeout / no JSON block | post nothing; **CLEAR_LEASE**; retry next pass |
 | MOVE/REJECT | 409 fenced (lease/TTL expired mid-work) | **CLEAR_LEASE**; redo next pass |
-| MOVE/REJECT | 422 gate_blocked / bad_act | **CLEAR_LEASE**; log (Slice 2: escalate / block to stop re-spawn) |
+| MOVE/REJECT | 422 gate_blocked / bad_act | **CLEAR_LEASE**; `decide` re-derives next pass (gate flipped → wait/respawn; budget → escalate; bounce → escalate) |
 | CLEAR_LEASE | any | best-effort; the lease expires at its TTL anyway |
 
 ## Verify
-Seed one card in `spec`, `export YDB_TOKEN=…`, then run `/loop 30s /yarradev-board:yarradev-board-run`.
-Watch it move spec→dev (designer) → dev→test (developer) → test→done (tester). Confirm
-`node $S/list-ready.mjs` goes quiet and the card reads `state: done`.
+Seed one card in `spec`; give the orchestrator the board token **in your launch message** — it inlines
+it per call. Do **NOT** `export` it: `/loop` dispatches role subagents in this same shell, so an exported
+token is inherited by every subagent (readable via `printenv`) and a prompt-injected one could forge acts
+under your identity. Then run `/loop 30s /yarradev-board:yarradev-board-run`. Watch it move spec→dev
+(designer) → dev→test (developer, gated on CI + any advisor) → test→done (tester) → and park at `done`
+awaiting a human GO; a `byKind:human` identity runs `node $S/human-go.mjs <id>` and the next pass promotes
+done→prod. Confirm `node $S/list-ready.mjs` goes quiet and the card reads `state: prod`.
