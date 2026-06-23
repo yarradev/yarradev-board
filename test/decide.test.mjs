@@ -74,3 +74,17 @@ test("decide (advisor): VETO/HOLD park the card; cleared resumes", () => {
   // cleared (no veto/hold) + ci green → advance
   assert.deepEqual(decide(mcard({ linked_head_sha: "abc", ci_rollup: "success" }), MLC, 1000), { kind: "advance", to: "test" });
 });
+
+const HLC = {
+  test: { owner: "tester", to: "done" },
+  done: { owner: "", to: "prod", gate: "human" },
+  prod: { owner: "", to: null },
+};
+const hcard = (o = {}) => ({ id: "h1", state: "done", blocked: false, lease_expiry_ts: null, ...o });
+
+test("decide (human gate): promote a human-gated stage; terminal + veto + blocked still dominate", () => {
+  assert.deepEqual(decide(hcard(), HLC, 1000), { kind: "promote", to: "prod" });
+  assert.deepEqual(decide(hcard({ state: "prod" }), HLC, 1000), { kind: "noop", reason: "terminal" });
+  assert.deepEqual(decide(hcard({ veto_held: true }), HLC, 1000), { kind: "noop", reason: "veto-open" });
+  assert.deepEqual(decide(hcard({ blocked: true }), HLC, 1000), { kind: "noop", reason: "blocked" });
+});

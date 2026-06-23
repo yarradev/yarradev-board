@@ -11,7 +11,8 @@
       ]
     },
     "test": { "owner": "tester", "to": "done" },
-    "done": { "owner": "", "to": null }
+    "done": { "owner": "", "to": "prod", "gate": "human" },
+    "prod": { "owner": "", "to": null }
   },
   "pace": { "maxCardsPerPass": 1, "claimTtlS": 1800, "minLoopIntervalS": 300 },
   "budgets": { "transition_budget": 50, "bounce_limit": 3, "respawn_window_ms": 60000, "per_edge_overrides": {} }

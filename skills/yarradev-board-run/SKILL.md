@@ -58,6 +58,13 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
       list) → log, fall through to CLEAR; the next pass re-derives.
    3. `node $S/clear-lease.mjs <id> <gen>` — always.
 
+   **`promote`** — a human-gated stage (e.g. production); advance ONLY on an accountable human's GO.
+   **No CLAIM** (the GO is gen-stamped — a CLAIM would invalidate it), no dispatch:
+   1. `node $S/promote.mjs <id> <to>` — MOVEs at the card's current gen.
+   2. `committed` → released to `<to>`. **422 with `blocked_by` ⊇ `human_go`** → log "awaiting human GO"
+      and wait. A human (a `byKind:human` identity) runs `node $S/human-go.mjs <id>` to approve; the next
+      pass's promote then commits. **Agents cannot self-approve a release.**
+
    **`work`** or **`respawn`** — dispatch the stage owner:
    1. **CLAIM:** `node $S/claim.mjs <id> <role> <pace.claimTtlS>` → keep **`gen`** (`ok:false` → skip).
       Thread `gen` **verbatim** into the act you post and into CLEAR_LEASE; never reuse a gen across passes.

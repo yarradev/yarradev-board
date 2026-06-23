@@ -41,6 +41,10 @@ export function decide(card, lc, nowMs, budgets = DEFAULT_BUDGETS) {
     return { kind: "escalate", reason: "transition-budget" };
   }
 
+  // Human-gated stage (e.g. production): only an accountable human's HUMAN_GO advances it. The
+  // orchestrator attempts the MOVE (the board's human_go gate is the enforcer); agents cannot self-approve.
+  if (stage.gate === "human") return { kind: "promote", to: stage.to };
+
   // Judgement stage (default): the subagent's verdict drives MOVE/REJECT.
   if (stage.gate !== "mechanical") {
     return { kind: "work", role: stage.owner, to: stage.to };

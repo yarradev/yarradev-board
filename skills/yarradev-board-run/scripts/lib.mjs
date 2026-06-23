@@ -166,4 +166,18 @@ export class BoardClient {
     const { status, outcome } = await this.act({ type: "CLEAR_VETO", item_id: id, data: { role: "security-advisor" } });
     return { ok: outcome === "committed", status, outcome };
   }
+
+  // Read one card's snapshot (for current_gen — a promote MOVEs at the current gen, gen-required).
+  async getCard(id) {
+    const res = await fetch(this.url(`/cards/${encodeURIComponent(id)}`), { headers: this.headers() });
+    if (!res.ok) return null;
+    return res.json().catch(() => null);
+  }
+
+  // Accountable-human production GO (gen-exempt). The board authorizes HUMAN_GO only for a byKind:"human"
+  // identity (plus a HUMAN_GO cap), so run this as a human identity — never the orchestrator's agent token.
+  async humanGo(id) {
+    const { status, outcome } = await this.act({ type: "HUMAN_GO", item_id: id, data: {} });
+    return { ok: outcome === "committed", status, outcome };
+  }
 }
