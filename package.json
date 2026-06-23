@@ -1,0 +1,10 @@
+{
+  "name": "yarradev-board",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "yarradev board orchestrator plugin — orchestrator skill + role agents that drive a yarradev HTTP board on your Claude subscription.",
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}

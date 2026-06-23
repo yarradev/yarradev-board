@@ -1,0 +1,10 @@
+{
+  "name": "yarradev-board",
+  "version": "0.1.0",
+  "description": "yarradev board orchestrator: a reconciliation-loop skill that drives a yarradev HTTP board (Cloudflare Durable Object) and dispatches role subagents (designer/developer/tester) via the Agent tool — running on your own Claude subscription.",
+  "author": { "name": "Nabeel Shaheen" },
+  "homepage": "https://github.com/yarrasys/yarradev-board",
+  "repository": "https://github.com/yarrasys/yarradev-board",
+  "license": "UNLICENSED",
+  "keywords": ["sdlc", "orchestration", "agents", "reconciliation-loop", "yarradev"]
+}

@@ -1,0 +1,5 @@
+node_modules/
+.env
+*.log
+# Per-install board config carries the live apiBase/doName — keep the template only.
+skills/**/config/board.json

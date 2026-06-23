@@ -1,0 +1,11 @@
+{
+  "apiBase": "http://localhost:8802",
+  "doName": "acme:flow",
+  "lifecycle": {
+    "spec": { "owner": "designer", "to": "dev" },
+    "dev": { "owner": "developer", "to": "test" },
+    "test": { "owner": "tester", "to": "done" },
+    "done": { "owner": "", "to": null }
+  },
+  "pace": { "maxCardsPerPass": 1, "claimTtlS": 1800, "minLoopIntervalS": 300 }
+}
