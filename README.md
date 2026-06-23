@@ -2,8 +2,8 @@
 
 A Claude Code plugin: a **reconciliation-loop orchestrator** that drives a **yarradev HTTP board**
 (the Cloudflare Durable Object board in `yarradev-platform`) and dispatches **role subagents**
-(designer → developer → tester, plus a **security-advisor** and a **human production gate**) via the
-**Agent tool** — running on **your own Claude subscription**.
+(designer → developer → tester, plus a **security-advisor**, a **releaser** staging deploy, and a
+**human production gate**) via the **Agent tool** — running on **your own Claude subscription**.
 
 You install the plugin, point it at your board, and run `/loop … /yarradev-board:yarradev-board-run`.
 Each pass it claims a ready card, dispatches the stage's role subagent to do the real work, and posts
@@ -47,11 +47,12 @@ Or load locally during development by enabling the plugin from this checkout.
    persistently** — role subagents share the machine and could read an exported token.
 
 `config/board.json` is gitignored. `board.example.json` ships the **full lifecycle**
-`spec→dev→test→done→prod`: `spec` (judgement → designer), `dev` (mechanical **CI gate** + a
-**security-advisor** watching protected paths → developer), `test` (judgement → tester), `done→prod`
-(**human GO** required), `prod` (terminal). Defaults: `apiBase http://localhost:8802`,
-`doName acme:flow`, pace `{ maxCardsPerPass:1, claimTtlS:1800, minLoopIntervalS:300 }`, budgets
-`{ transition_budget:50, bounce_limit:3, respawn_window_ms:60000 }`.
+`spec→dev→test→done→staging→prod`: `spec` (judgement → designer), `dev` (mechanical **CI gate** + a
+**security-advisor** watching protected paths → developer), `test` (judgement → tester), `done` (the
+**releaser** runs `deploy.staging` → staging), `staging→prod` (**human GO** required), `prod` (terminal).
+Defaults: `apiBase http://localhost:8802`, `doName acme:flow`, pace `{ maxCardsPerPass:1, claimTtlS:1800,
+minLoopIntervalS:300 }`, budgets `{ transition_budget:50, bounce_limit:3, respawn_window_ms:60000 }`,
+`deploy.staging` (your staging-deploy command; empty by default → the releaser escalates to configure it).
 
 > The plugin lifecycle's `gate` tags (`mechanical`/`human`) are **routing hints for `decide()` only**.
 > The board's real enforcement is the compiled `GateExpr` on each transition edge, and the two must
@@ -75,10 +76,13 @@ advisor VETO, human GO). Boot the **board** (:8801), **api** (:8802), and **webh
 
 1. **Create the board machine** (admin `POST /boards`, header `x-yd-admin: local-admin`) to **mirror**
    the plugin lifecycle:
-   - forward edges `spec→dev`, `test→done`; backward edges as REJECT (`{type:"REJECT",from:"test",
-     to:"dev"}`, `{type:"REJECT",from:"dev",to:"spec"}`) — a MOVE on a REJECT edge is rejected;
+   - forward edges `spec→dev`, `test→done`, `done→staging`; backward edges as REJECT
+     (`{type:"REJECT",from:"test",to:"dev"}`, `{type:"REJECT",from:"dev",to:"spec"}`,
+     `{type:"REJECT",from:"done",to:"dev"}` for a failed staging deploy) — a MOVE on a REJECT edge is rejected;
    - the **gated** edges: `{from:"dev",to:"test",gate:{all:[{p:"ci_green"},{p:"no_open_veto"},
-     {p:"no_open_hold"}]}}` and `{from:"done",to:"prod",gate:{p:"human_go"}}`;
+     {p:"no_open_hold"}]}}`, the judgement edge `{from:"done",to:"staging",gate:{p:"not_blocked"}}` (the
+     releaser's verdict drives it — **not** `ci_green`, which would reuse the dev PR's rollup), and
+     `{from:"staging",to:"prod",gate:{p:"human_go"}}`;
    - `terminal:["prod"]`.
 2. **Identities & caps:**
    - orchestrator `orch1.s3cret` — caps `CREATE / CLAIM / MOVE / REJECT / CLEAR_LEASE / LINK_PR / PUSH /
@@ -107,9 +111,13 @@ advisor VETO, human GO). Boot the **board** (:8801), **api** (:8802), and **webh
      re-spawn**. (A `conclusion:"failure"` → `respawn` → developer fixes, PUSH a new head; a later green
      `check_run` on the new head advances; a stale one on the old head is dropped.)
    - **test→done** — tester fetches the branch, validates → MOVE.
-   - **done→prod** (human GO) — the orchestrator attempts `promote` each pass and logs **422 `human_go`**
-     (no GO yet). A human runs `node $S/human-go.mjs card-1` as `human1.s3cret`; the next pass's promote
-     commits. Confirm `GET /boards/acme:flow/cards/card-1` → **`state: prod`**.
+   - **done→staging** — the releaser checks out the branch in its own worktree, runs `deploy.staging`
+     (idempotently), and returns `advance` → orchestrator MOVEs to `staging` (a failed deploy → `reject` to
+     `dev`). Set `deploy.staging` in `board.json` to a real command; an empty command makes the releaser escalate.
+   - **staging→prod** (human GO) — the orchestrator attempts `promote` each pass and logs **422 `human_go`**
+     (no GO yet). Once the card reads `staging`, a human runs `node $S/human-go.mjs card-1` as
+     `human1.s3cret`; the next pass's promote commits. Confirm `GET /boards/acme:flow/cards/card-1` →
+     **`state: prod`**.
 
 ## Tests
 
@@ -125,8 +133,8 @@ unit-tested. Automated tests cover the deterministic rail (scripts + gen-fence/g
 
 ## Scope and what's next
 
-**Shipped** — the orchestrator skill + `designer`/`developer`/`tester` + `security-advisor` agents
-driving the full lifecycle `spec→dev→test→done→prod`:
+**Shipped** — the orchestrator skill + `designer`/`developer`/`tester` + `security-advisor` + `releaser`
+agents driving the full lifecycle `spec→dev→test→done→staging→prod`:
 
 - **judgement** stages (spec, test) — the subagent's verdict drives MOVE/REJECT (backward edges are
   REJECT; intent rides the card `title`; the tester finds the dev branch by `cardId`);
@@ -138,12 +146,15 @@ driving the full lifecycle `spec→dev→test→done→prod`:
 - a **security-advisor with VETO/HOLD** — joins `dev` when changed files match its `watch_paths`; a VETO
   blocks dev→test (board `no_open_veto` gate + a `decide` park) until a `clear_authority` signatory
   CLEARs it;
-- a **human production gate** — `done→prod` requires a `byKind:human` `HUMAN_GO` (`promote`); agents
+- a **releaser staging deploy** — at `done` the releaser runs the configured `deploy.staging` command in
+  an isolated worktree, returns a verdict, and the orchestrator MOVEs the card to `staging` (a failed
+  deploy rejects to `dev`); the releaser never touches production.
+- a **human production gate** — `staging→prod` requires a `byKind:human` `HUMAN_GO` (`promote`); agents
   cannot self-approve a release.
 
 The orchestrator holds the board token (inlined per call) and posts every act under one shared identity
 from each subagent's returned verdict.
 
-**Next:** per-role board identities (true per-subagent isolation), a staging stage + releaser agent,
-richer cross-stage context persistence (designer's plan → developer), `RENEW` for long jobs, multi-card
-concurrency, the analyst/epic tier, publishing the plugin, and the Cloudflare deploy.
+**Next:** per-role board identities (true per-subagent isolation), richer cross-stage context persistence
+(designer's plan → developer), `RENEW` for long jobs, multi-card concurrency, the analyst/epic tier, and
+the Cloudflare deploy.

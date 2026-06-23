@@ -96,9 +96,9 @@ const EXAMPLE = JSON.parse(
   readFileSync(new URL("../skills/yarradev-board-run/config/board.example.json", import.meta.url), "utf8")
 );
 
-test("decide (shipped board.example.json): full spec→dev→test→done→prod lifecycle routes correctly", () => {
+test("decide (shipped board.example.json): full spec→dev→test→done→staging→prod lifecycle routes correctly", () => {
   const lc = EXAMPLE.lifecycle;
-  assert.deepEqual(Object.keys(lc), ["spec", "dev", "test", "done", "prod"]); // shape is pinned
+  assert.deepEqual(Object.keys(lc), ["spec", "dev", "test", "done", "staging", "prod"]); // shape is pinned
   const c = (o) => ({ id: "x", blocked: false, lease_expiry_ts: null, current_gen: 1, ...o });
   // spec: judgement → designer
   assert.deepEqual(decide(c({ state: "spec" }), lc, 1000), { kind: "work", role: "designer", to: "dev" });
@@ -110,8 +110,13 @@ test("decide (shipped board.example.json): full spec→dev→test→done→prod 
   assert.deepEqual(decide(c({ state: "dev", linked_head_sha: "abc", ci_rollup: "success", veto_held: true }), lc, 1000), { kind: "noop", reason: "veto-open" });
   // test: judgement → tester
   assert.deepEqual(decide(c({ state: "test" }), lc, 1000), { kind: "work", role: "tester", to: "done" });
-  // done: human-gated (NOT terminal anymore) → promote
-  assert.deepEqual(decide(c({ state: "done" }), lc, 1000), { kind: "promote", to: "prod" });
+  // done: judgement deploy-work stage → dispatch the releaser to deploy to staging
+  assert.deepEqual(decide(c({ state: "done" }), lc, 1000), { kind: "work", role: "releaser", to: "staging" });
+  // staging: human-gated → promote to prod (the prod gate moved here from done)
+  assert.deepEqual(decide(c({ state: "staging" }), lc, 1000), { kind: "promote", to: "prod" });
+  // staging: blocked/veto still dominate the human gate
+  assert.deepEqual(decide(c({ state: "staging", blocked: true }), lc, 1000), { kind: "noop", reason: "blocked" });
+  assert.deepEqual(decide(c({ state: "staging", veto_held: true }), lc, 1000), { kind: "noop", reason: "veto-open" });
   // prod: terminal
   assert.deepEqual(decide(c({ state: "prod" }), lc, 1000), { kind: "noop", reason: "terminal" });
 });
