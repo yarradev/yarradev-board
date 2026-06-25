@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import {
   validateCommandString, assertSafeCommandFields, mergePlatformConfig, COMMAND_FIELD_PATHS,
 } from "../skills/yarradev-board-run/scripts/config-trust.mjs";
+import {
+  validateLoadedConfig,
+} from "../skills/yarradev-board-run/scripts/lib.mjs";
 
 test("validateCommandString accepts plain deploy commands + empty sentinel", () => {
   for (const s of ["", "wrangler deploy --env staging", "npm run deploy:staging",
@@ -39,4 +42,17 @@ test("mergePlatformConfig drops platform command fields, keeps platform policy +
 
 test("COMMAND_FIELD_PATHS covers deploy.staging + deploy.prod", () => {
   assert.deepEqual([...COMMAND_FIELD_PATHS].sort(), ["deploy.prod", "deploy.staging"]);
+});
+
+// Task 2: validateLoadedConfig — exported seam wired into loadConfig()
+test("validateLoadedConfig throws on injected deploy command", () => {
+  assert.throws(
+    () => validateLoadedConfig({ deploy: { staging: "x; rm -rf /" } }),
+    /untrusted config/,
+  );
+});
+
+test("validateLoadedConfig returns cfg on clean deploy command", () => {
+  const cfg = { deploy: { staging: "wrangler deploy --env staging" } };
+  assert.equal(validateLoadedConfig(cfg), cfg);
 });
