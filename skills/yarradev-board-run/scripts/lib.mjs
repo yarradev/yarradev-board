@@ -14,6 +14,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { assertSafeCommandFields } from "./config-trust.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONFIG_DIR = join(HERE, "..", "config");
@@ -48,7 +49,20 @@ export function loadConfig() {
   if (process.env.YDB_DO_NAME) cfg.doName = process.env.YDB_DO_NAME;
   if (!cfg.apiBase || !cfg.doName) throw new Error(`board config missing apiBase/doName (config dir ${CONFIG_DIR})`);
   if (!cfg.lifecycle) throw new Error(`board config missing lifecycle (config dir ${CONFIG_DIR})`);
+  assertSafeCommandFields(cfg);
   return cfg;
+}
+
+/**
+ * Thin wrapper around assertSafeCommandFields for testability.
+ * Called inside loadConfig() — exported so unit tests can verify the gate
+ * without needing a temp config directory.
+ * @param {object} cfg
+ * @returns {object} cfg on success
+ * @throws {Error} if any command field is untrusted
+ */
+export function validateLoadedConfig(cfg) {
+  return assertSafeCommandFields(cfg);
 }
 
 export function requireToken(tok) {
