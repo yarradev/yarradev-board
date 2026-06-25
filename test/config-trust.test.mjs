@@ -56,3 +56,21 @@ test("validateLoadedConfig returns cfg on clean deploy command", () => {
   const cfg = { deploy: { staging: "wrangler deploy --env staging" } };
   assert.equal(validateLoadedConfig(cfg), cfg);
 });
+
+// Task 3: eval-invariant guard — config strings are data/argv, never eval'd
+import { readFileSync } from "node:fs";
+
+test("config-trust.mjs and lib.mjs contain no eval() or new Function()", () => {
+  const configTrustSrc = readFileSync(
+    new URL("../skills/yarradev-board-run/scripts/config-trust.mjs", import.meta.url),
+    "utf8",
+  );
+  const libSrc = readFileSync(
+    new URL("../skills/yarradev-board-run/scripts/lib.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.ok(!configTrustSrc.includes("eval("), "config-trust.mjs must not contain eval(");
+  assert.ok(!configTrustSrc.includes("new Function("), "config-trust.mjs must not contain new Function(");
+  assert.ok(!libSrc.includes("eval("), "lib.mjs must not contain eval(");
+  assert.ok(!libSrc.includes("new Function("), "lib.mjs must not contain new Function(");
+});

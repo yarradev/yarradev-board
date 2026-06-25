@@ -32,6 +32,7 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
   `budgets` = `{ transition_budget, bounce_limit, respawn_window_ms, per_edge_overrides }` (thrash caps).
   `deploy.staging` = the shell command the **releaser** runs to deploy a validated change to staging
   (e.g. `wrangler deploy --env staging`); empty → the releaser escalates asking you to configure it.
+  Deploy commands are **validated as untrusted** at config load — a single plain invocation only; no shell chaining, substitution, or redirection (put compound deploys in a committed script). Platform-pushed config never supplies command fields (§14 S3).
 - **Lifecycle `gate` tags are plugin-side routing hints — not the enforcer.** A stage's `gate` only tells
   `decide()` how to route (`mechanical` → CI advance/respawn; `human` → promote; default → dispatch the
   owner for a judgement verdict). The board's REAL enforcement is the compiled `GateExpr` on each
