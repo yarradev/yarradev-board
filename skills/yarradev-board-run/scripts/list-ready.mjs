@@ -17,6 +17,13 @@ const now = Date.now();
 
 const cards = await client.listCards();
 for (const card of cards) {
+  // A card with no id is corrupt (e.g. a CREATE that committed with an empty item_id): no act can
+  // target it — every non-CREATE act fence-fails on the missing item — so it can never be actioned.
+  // Skip it so it can't wedge the pass (it would otherwise sort first by id ASC and starve real work).
+  if (!card.id) {
+    process.stderr.write(`skip <empty-id> (${card.state}): corrupt item — unactionable\n`);
+    continue;
+  }
   const a = decide(card, cfg.lifecycle, now, budgets);
   if (a.kind === "noop") {
     process.stderr.write(`skip ${card.id} (${card.state}): ${a.reason}\n`);
