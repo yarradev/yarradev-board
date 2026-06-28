@@ -1,0 +1,21 @@
+{
+  "apiBase": "https://yarradev-api.prod-yarradev-account.workers.dev",
+  "doName": "acme:main",
+  "lifecycle": {
+    "spec": { "owner": "designer", "to": "dev" },
+    "dev": {
+      "owner": "developer", "to": "test", "gate": "mechanical",
+      "advisors": [
+        { "role": "security-advisor", "joins_at": ["dev"],
+          "watch_paths": ["**/auth/**", "**/*secret*", "**/*credential*", "**/.env*", "**/*.pem", "**/*.key", "**/payments/**", "**/billing/**"] }
+      ]
+    },
+    "test": { "owner": "tester", "to": "done" },
+    "done": { "owner": "releaser", "to": "staging" },
+    "staging": { "owner": "", "to": "prod", "gate": "human" },
+    "prod": { "owner": "", "to": null }
+  },
+  "deploy": { "staging": "./scripts/deploy.sh" },
+  "pace": { "maxCardsPerPass": 1, "claimTtlS": 1800, "minLoopIntervalS": 300 },
+  "budgets": { "transition_budget": 50, "bounce_limit": 3, "respawn_window_ms": 60000, "per_edge_overrides": {} }
+}
