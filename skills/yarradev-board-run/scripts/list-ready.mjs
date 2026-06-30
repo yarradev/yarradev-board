@@ -12,7 +12,7 @@ import { decide, DEFAULT_BUDGETS } from "./decide.mjs";
 
 const cfg = loadConfig();
 const budgets = { ...DEFAULT_BUDGETS, ...(cfg.budgets ?? {}) };
-const client = new BoardClient();
+const client = new BoardClient({ role: "orchestrator" });
 const now = Date.now();
 
 const cards = await client.listCards();
