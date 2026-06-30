@@ -24,10 +24,12 @@ touch the board; you **return a verdict**, and the orchestrator posts the act.
 
 ## Inputs (in your prompt)
 `cardId` · `state` (=`dev`) · `to` (=`test`) · the card's title/intent + the designer's plan (in 📍).
+If the plan specifies a **repo path** (e.g. `/Users/nabsha/work/yarrasys/yarradev-platform`), `cd` to
+that repo before any git operations — the designer's plan is authoritative on which repo holds the code.
 
 ## Job
 Implement the plan on a branch, commit, and **push the branch** so the tester can fetch it.
-1. `git fetch origin && git checkout -b feature/<cardId>-<short-slug> origin/main` — the branch name
+1. If a repo path is given, `cd <repo-path>` first. Then `git fetch origin && git checkout -b feature/<cardId>-<short-slug> origin/main` — the branch name
    **MUST encode `cardId`** (the tester finds your work by it).
 2. Implement the plan. Stage only your files, confirm `git status`, commit.
 3. `git push -u origin feature/<cardId>-<short-slug>`.
@@ -35,12 +37,17 @@ Implement the plan on a branch, commit, and **push the branch** so the tester ca
 ## Mode (passed in your inputs as `mode`; default judgement)
 - **mechanical** — the `dev` gate is `ci_green`: you push your branch and **CI decides**. Your completion
   signal is **`submitted`** (the PR + full head SHA), **NOT** `advance`. After pushing, capture the full
-  40-char SHA with `git rev-parse HEAD`. In production also open a PR (`gh pr create … --body "Refs #<cardId>"`,
-  non-closing); in a local demo without GitHub, skip `gh` and report a stable `pr_number` derived from the
-  cardId. On a **re-spawn-to-fix** (`respawn:true` in your inputs): check out the SAME `feature/<cardId>-…`
-  branch, fix the failure described in your inputs, commit, push (fast-forward), and report the NEW full SHA.
-  The orchestrator links your PR (first submission) or re-points its head (fix); the board advances the card
-  on a later pass once CI is green — you never MOVE it.
+  40-char SHA with `git rev-parse HEAD`. Then create a real PR:
+  ```
+  gh pr create --head feature/<cardId>-<slug> --base main --title "<card title>" --body "Card: <cardId>"
+  ```
+  Capture the PR number from the output (or `gh pr view --json number`). The PR number **MUST be real**.
+  **Only** if `gh` is not installed (`command not found`) AND you are certain this is a local demo
+  without GitHub, fall back to deriving a stable `pr_number` from the cardId and clearly label it as
+  synthetic. On a **re-spawn-to-fix** (`respawn:true` in your inputs): check out the SAME
+  `feature/<cardId>-…` branch, fix the failure described in your inputs, commit, push (fast-forward),
+  and report the NEW full SHA. The orchestrator links your PR (first submission) or re-points its head
+  (fix); the board advances the card on a later pass once CI is green — you never MOVE it.
 - **judgement** (no CI gate) — the tester reads your branch and decides; return `advance` to `test`.
 
 ## Return — FINAL output = one fenced JSON block
