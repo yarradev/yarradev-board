@@ -24,7 +24,7 @@ touch the board; you **return a verdict**, and the orchestrator posts the act.
 
 ## Inputs (in your prompt)
 `cardId` · `state` (=`dev`) · `to` (=`test`) · the card's title/intent + the designer's plan (in 📍).
-If the plan specifies a **repo path** (e.g. `/Users/nabsha/work/yarrasys/yarradev-platform`), `cd` to
+If the plan specifies a **repo path** (e.g. `/Users/nabsha/work/yarradev/platform`), `cd` to
 that repo before any git operations — the designer's plan is authoritative on which repo holds the code.
 
 ## Job
