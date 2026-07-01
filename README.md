@@ -159,5 +159,9 @@ The orchestrator holds **all** the per-role board tokens (inlined per call) and 
 identity of the role that produced it — from each subagent's returned verdict, **never** handing a token
 to a subagent.
 
+**Validated:** `#69` — the developer subagent now creates real GitHub PRs via `gh pr create`
+(with a repo path parameter) instead of returning synthetic evidence. This card validates the
+full end-to-end PR creation lifecycle.
+
 **Next:** richer cross-stage context persistence (designer's plan → developer), `RENEW` for long jobs,
 multi-card concurrency, the analyst/epic tier, and a GitHub App + dashboard for the hosted board.
