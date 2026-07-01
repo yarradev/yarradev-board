@@ -2,6 +2,7 @@
   "apiBase": "https://yarradev-api.prod-yarradev-account.workers.dev",
   "doName": "acme:main",
   "lifecycle": {
+    "backlog": { "owner": "designer", "to": "spec" },
     "spec": { "owner": "designer", "to": "dev" },
     "dev": {
       "owner": "developer", "to": "test", "gate": "mechanical",
@@ -11,7 +12,7 @@
       ]
     },
     "test": { "owner": "tester", "to": "done" },
-    "done": { "owner": "releaser", "to": "staging" },
+    "done": { "owner": "releaser", "to": "staging", "gate": "judgement" },
     "staging": { "owner": "", "to": "prod", "gate": "human" },
     "prod": { "owner": "", "to": null }
   },
