@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 # Grant GITHUB_TOKEN write access to checks so check_run events fire
 permissions:
