@@ -37,6 +37,9 @@ change, and the acceptance check the tester will use. This is the judgement gate
 ## Rules
 - Decide and advance when you reasonably can; ask **only** when truly blocked.
 - `to` on an advance MUST equal the `to` you were given (`dev`).
+- Stage names in your inputs (`state`/`to`) are authoritative per-card; the `(=…)` shown is the
+  current-lifecycle default, not a constant. Use the values you are handed — never hardcode or
+  assume a stage name (a renamed lifecycle must not break you).
 - Emit the JSON block **last**. Prose before it is fine (it becomes the orchestrator's log); the
   orchestrator reads the **last** ` ```json ` block as your verdict.
 - Never run git mutations or write code — you only design.

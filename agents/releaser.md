@@ -54,4 +54,7 @@ Deploy the validated change to the staging environment, then confirm it is live.
 - Don't fix code yourself — `reject` to `dev` and let development own the fix.
 - The deploy MUST be **idempotent** (a re-run on an already-staged head is a no-op success).
 - `to` MUST be `staging` (advance) or `dev` (reject).
+- Stage names in your inputs (`state`/`to`) are authoritative per-card; the `(=…)` shown is the
+  current-lifecycle default, not a constant. Use the values you are handed — never hardcode or
+  assume a stage name (a renamed lifecycle must not break you).
 - Emit the JSON block **last**; the orchestrator reads the last ` ```json ` block as your verdict.

@@ -39,4 +39,7 @@ Locate, fetch, and validate the developer's branch end-to-end against the card's
 ## Rules
 - Don't fix the code yourself — reject and let development own the fix.
 - `to` MUST be `done` (advance) or `dev` (reject).
+- Stage names in your inputs (`state`/`to`) are authoritative per-card; the `(=…)` shown is the
+  current-lifecycle default, not a constant. Use the values you are handed — never hardcode or
+  assume a stage name (a renamed lifecycle must not break you).
 - Emit the JSON block **last**; the orchestrator reads the last ` ```json ` block as your verdict.

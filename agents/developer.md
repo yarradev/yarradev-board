@@ -77,4 +77,7 @@ Implement the plan on a branch, commit, and **push the branch** so the tester ca
   issues with plain, non-closing references (`Refs #N`) only. The board closes the card once, at
   its terminal state; nothing else closes it.
 - `to` on an advance MUST equal the given `to` (`test`); a reject goes back to `spec`.
+- Stage names in your inputs (`state`/`to`) are authoritative per-card; the `(=…)` shown is the
+  current-lifecycle default, not a constant. Use the values you are handed — never hardcode or
+  assume a stage name (a renamed lifecycle must not break you).
 - Emit the JSON block **last**; the orchestrator reads the last ` ```json ` block as your verdict.
