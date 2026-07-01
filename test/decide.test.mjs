@@ -96,10 +96,12 @@ const EXAMPLE = JSON.parse(
   readFileSync(new URL("../skills/yarradev-board-run/config/board.example.json", import.meta.url), "utf8")
 );
 
-test("decide (shipped board.example.json): full spec→dev→test→done→staging→prod lifecycle routes correctly", () => {
+test("decide (shipped board.example.json): full backlog→spec→dev→test→done→staging→prod lifecycle routes correctly", () => {
   const lc = EXAMPLE.lifecycle;
-  assert.deepEqual(Object.keys(lc), ["spec", "dev", "test", "done", "staging", "prod"]); // shape is pinned
+  assert.deepEqual(Object.keys(lc), ["backlog", "spec", "dev", "test", "done", "staging", "prod"]); // shape is pinned
   const c = (o) => ({ id: "x", blocked: false, lease_expiry_ts: null, current_gen: 1, ...o });
+  // backlog: judgement intake stage (owner designer, to spec) → work the designer to spec
+  assert.deepEqual(decide(c({ state: "backlog" }), lc, 1000), { kind: "work", role: "designer", to: "spec" });
   // spec: judgement → designer
   assert.deepEqual(decide(c({ state: "spec" }), lc, 1000), { kind: "work", role: "designer", to: "dev" });
   // dev: mechanical + advisor, no PR yet → work the developer
