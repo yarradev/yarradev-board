@@ -41,6 +41,9 @@ Implement the plan on a branch, commit, and **push the branch** so the tester ca
   ```
   gh pr create --head feature/<cardId>-<slug> --base main --title "<card title>" --body "Card: <cardId>"
   ```
+  The PR body **MUST NOT** contain a GitHub auto-closing keyword (`Closes`/`Fixes`/`Resolves #N`) —
+  those auto-close a linked issue on merge and race the board's close-once-at-terminal. Keep
+  `Card: <cardId>`; if a tracking issue exists, add a non-closing `Refs #<n>` instead.
   Capture the PR number from the output (or `gh pr view --json number`). The PR number **MUST be real**.
   **Only** if `gh` is not installed (`command not found`) AND you are certain this is a local demo
   without GitHub, fall back to deriving a stable `pr_number` from the cardId and clearly label it as
@@ -70,5 +73,8 @@ Implement the plan on a branch, commit, and **push the branch** so the tester ca
 
 ## Rules
 - NEVER work in the shared tree; NEVER `git add -A`; NEVER merge anything.
+- NEVER put a GitHub auto-closing keyword (`Closes`/`Fixes`/`Resolves #N`) in a PR body — link
+  issues with plain, non-closing references (`Refs #N`) only. The board closes the card once, at
+  its terminal state; nothing else closes it.
 - `to` on an advance MUST equal the given `to` (`test`); a reject goes back to `spec`.
 - Emit the JSON block **last**; the orchestrator reads the last ` ```json ` block as your verdict.
