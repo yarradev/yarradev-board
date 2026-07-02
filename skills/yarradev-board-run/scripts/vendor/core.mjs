@@ -189,6 +189,22 @@ function reduce(verdict, card, lifecycle) {
     case "advice":
     case "clean":
       return [{ type: "ADVICE", item_id: card.id, data: { reviewed_head: verdict.head, reason: verdict.reason ?? "" } }];
+    case "decomposed": {
+      if (!st?.to) return escalate(card, `decomposed from ${card.state} but it has no forward edge`);
+      if (verdict.to !== st.to) {
+        return escalate(
+          card,
+          `MOVE names to-stage:${verdict.to} but ${card.state}'s only forward edge is \u2192${st.to}`
+        );
+      }
+      if (verdict.children.length === 0) return escalate(card, "decomposed with 0 children");
+      const creates = verdict.children.map((c) => ({
+        type: "CREATE",
+        item_id: "",
+        data: { type: "story", title: c.title, state: c.state ?? "backlog", parent_id: card.id }
+      }));
+      return [...creates, { type: "MOVE", item_id: card.id, gen: card.current_gen, data: { to: verdict.to } }];
+    }
     default: {
       const _exhaustive = verdict;
       return escalate(card, `reduce: unhandled verdict (${_exhaustive.status})`);
@@ -326,6 +342,12 @@ var BoardClient = class {
   // tick (the clean-card livelock: no advisor_state row → advisor_clear false forever → re-dispatch).
   advice(id, head, reason = "") {
     return this.act({ type: "ADVICE", item_id: id, data: { reviewed_head: head, reason } });
+  }
+  // Mint a new card (gen-exempt — CREATE has no prior gen to fence on; caller mints item_id, board
+  // REJECTS an empty one, storage.ts:1877-1878). Used by create.mjs (analyst-driven epic decomposition)
+  // and by a future direct-poster of reduce()'s "decomposed" output once it fills in item_id itself.
+  create(id, data) {
+    return this.act({ type: "CREATE", item_id: id, data });
   }
   // Accountable-human clear (gen-exempt). The board authorizes CLEAR_VETO only for a clear_authority
   // signatory identity.
