@@ -12,7 +12,8 @@
  *      · unknown stage        → ESCALATE "unknown-stage: …"   (was noop "unknown-state")
  *      · expired lease        → RECLAIM role+to                (was work — reclaim = take over + re-dispatch)
  *      · blocked, no question  → ESCALATE board-drift          (would otherwise park forever)
- *      · veto_held, no veto    → ESCALATE board-drift
+ *      · veto_held, empty vetoes[] → PARK noop "veto-open"      (sticky-veto-after-reclaim; NOT drift —
+ *                                                                the board can't produce out-of-band veto corruption)
  *      · transition budget checked BEFORE blocked (so blocked+over-budget escalates, not noops)
  *      · mechanical + advisor_clear still failing → WORK the advisor (advisor-clear routing)
  */
@@ -132,14 +133,17 @@ test("decide (default budgets): transition-budget + ci-stall escalate; otherwise
   assert.match(blockedOverBudget.reason, /transition-budget/);
 });
 
-test("decide (advisor): VETO/HOLD park the card; missing flag is board-drift; cleared resumes", () => {
+test("decide (advisor): VETO/HOLD park the card; sticky-veto-after-reclaim parks (not board-drift); cleared resumes", () => {
   // VETO open (with its veto flag) dominates ci_green → parked
   assert.deepEqual(decide(mcard({ veto_held: true, vetoes: [VETO], linked_head_sha: "abc", ci_rollup: "success" }), MLC, POLICY, 1000), { kind: "noop", reason: "veto-open" });
-  // UPGRADE: veto_held with NO open veto → board-drift escalate
-  const vdrift = decide(mcard({ veto_held: true, vetoes: [], linked_head_sha: "abc", ci_rollup: "success" }), MLC, POLICY, 1000);
-  assert.equal(vdrift.kind, "escalate");
-  assert.match(vdrift.reason, /board-drift/);
-  // HOLD open → parked (no board-drift guard for holds)
+  // Sticky veto after a lease-reclaim gen bump: veto_held=1 (item flag, not recomputed on reclaim) but
+  // the GEN-SCOPED vetoes[] reads empty at the new gen. Platform PARKS (noop veto-open) — this is the
+  // expected sticky-veto state, NOT board-drift. (v1 escalated out-of-band label corruption; the board
+  // can't produce that — veto_held is fold-only. Post-merge max-effort review, 2026-07-02.)
+  const stickyVeto = decide(mcard({ veto_held: true, vetoes: [], linked_head_sha: "abc", ci_rollup: "success" }), MLC, POLICY, 1000);
+  assert.equal(stickyVeto.kind, "noop");
+  assert.equal(stickyVeto.reason, "veto-open");
+  // HOLD open → parked
   assert.deepEqual(decide(mcard({ hold_open: true, linked_head_sha: "abc", ci_rollup: "success" }), MLC, POLICY, 1000), { kind: "noop", reason: "hold-open" });
   // cleared (no veto/hold) + ci green → advance
   assert.deepEqual(decide(mcard({ linked_head_sha: "abc", ci_rollup: "success" }), MLC, POLICY, 1000), { kind: "advance", role: "developer", to: "test" });
