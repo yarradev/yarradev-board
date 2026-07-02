@@ -50,9 +50,12 @@ function parseVerdict(text) {
   }
 }
 
+// ../shared/src/budgets.ts
+var TRANSITION_BUDGET_DEFAULT = 50;
+
 // src/config.ts
 var DEFAULT_BUDGETS = {
-  transition_budget: 50,
+  transition_budget: TRANSITION_BUDGET_DEFAULT,
   respawn_window_ms: 6e4
 };
 var stageOf = (lifecycle, state) => lifecycle[state];
@@ -77,6 +80,15 @@ function assertLifecycleCoherent(lifecycle, machine) {
   }
   if (missingEdges.length > 0) {
     problems.push(`missing edge(s) in machine.transitions: [${missingEdges.join(", ")}]`);
+  }
+  const missingRejectEdges = [];
+  for (const [state, def] of Object.entries(lifecycle)) {
+    if (def.rejectTo == null) continue;
+    const hasEdge = machine.transitions.some((t) => t.from === state && t.to === def.rejectTo);
+    if (!hasEdge) missingRejectEdges.push(`${state}->${def.rejectTo}`);
+  }
+  if (missingRejectEdges.length > 0) {
+    problems.push(`missing REJECT edge(s) in machine.transitions: [${missingRejectEdges.join(", ")}]`);
   }
   if (problems.length > 0) {
     throw new Error(`assertLifecycleCoherent: lifecycle disagrees with GET /config machine \u2014 ${problems.join("; ")}`);
@@ -151,7 +163,7 @@ function reduce(verdict, card, lifecycle) {
     }
     case "reject": {
       const to = verdict.to;
-      const validBackEdge = to != null && lifecycle[to]?.to === card.state;
+      const validBackEdge = to != null && (st?.rejectTo != null ? to === st.rejectTo : lifecycle[to]?.to === card.state);
       if (!validBackEdge) return escalate(card, `REJECT on undefined backward edge ${card.state}->${to ?? "?"}`);
       return [{ type: "REJECT", item_id: card.id, gen: card.current_gen, data: { to } }];
     }
@@ -170,7 +182,7 @@ function reduce(verdict, card, lifecycle) {
       return [{ type: "HOLD", item_id: card.id, data: { role: verdict.role, head: verdict.head, reason: verdict.reason ?? "" } }];
     case "advice":
     case "clean":
-      return [{ type: "ADVICE", item_id: card.id, data: { reviewed_head: verdict.head } }];
+      return [{ type: "ADVICE", item_id: card.id, data: { reviewed_head: verdict.head, reason: verdict.reason ?? "" } }];
     default: {
       const _exhaustive = verdict;
       return escalate(card, `reduce: unhandled verdict (${_exhaustive.status})`);
@@ -205,7 +217,10 @@ var BoardClient = class {
   }
   async getJson(suffix) {
     const res = await this.fetchImpl(this.url(suffix), { headers: this.headers() });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.error(`[boardClient] GET ${suffix} \u2192 HTTP ${res.status} ${res.statusText || ""} (returning null)`.trimEnd());
+      return null;
+    }
     return await res.json();
   }
   // ── reads ──────────────────────────────────────────────────────────────────
@@ -298,6 +313,13 @@ var BoardClient = class {
   }
   hold(id, reason = "", head = null) {
     return this.act({ type: "HOLD", item_id: id, data: { role: "security-advisor", reason, head } });
+  }
+  // Non-binding advisor review (gen-exempt). Records a CLEAN review at data.reviewed_head so the board's
+  // advisor_clear gate goes non-vacuous and the card advances — a clean/advice verdict does NOT park it.
+  // Posting this at every advisor dispatch is what stops a clean card's advisor being re-dispatched each
+  // tick (the clean-card livelock: no advisor_state row → advisor_clear false forever → re-dispatch).
+  advice(id, head, reason = "") {
+    return this.act({ type: "ADVICE", item_id: id, data: { reviewed_head: head, reason } });
   }
   // Accountable-human clear (gen-exempt). The board authorizes CLEAR_VETO only for a clear_authority
   // signatory identity.

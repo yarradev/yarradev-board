@@ -29,7 +29,9 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
 - Scripts: `${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts/` (call as `node <that>/<name>.mjs`).
 - Board config (apiBase, doName, lifecycle, pace, budgets, deploy): `…/config/board.json` — copy it from
   `board.example.json` and edit (a partial `board.json` merges over the template). It holds **no secret**.
-  `budgets` = `{ transition_budget, bounce_limit, respawn_window_ms, per_edge_overrides }` (thrash caps).
+  `budgets` = `{ bounce_limit, per_edge_overrides }` (thrash caps). `transition_budget`/`respawn_window_ms`
+  are not board.json fields — the live transition-count backstop and CI-stall respawn window are
+  decide()'s client-side `DEFAULT_BUDGETS` (`orchestrator-core/src/config.ts`).
   `deploy.staging` = the shell command the **releaser** runs to deploy a validated change to staging
   (e.g. `wrangler deploy --env staging`); empty → the releaser escalates asking you to configure it.
   Deploy commands are **validated as untrusted** at config load — a single plain invocation only; no shell chaining, substitution, or redirection (put compound deploys in a committed script). Platform-pushed config never supplies command fields (§14 S3).
@@ -54,7 +56,7 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
   isn't set (the fallback is logged to stderr). You hold **all** the role tokens and the scripts select
   the right one per act; **subagents still never see any token**. Mapping: `claim`/`clear-lease`/`escalate`
   → orchestrator · `move`/`reject` → the **stage owner** (passed as the last arg) · `link-pr`/`push` →
-  developer · `veto`/`hold` → security-advisor · `promote` → releaser · `human-go`/`clear-veto` → human.
+  developer · `veto`/`hold`/`advice` → security-advisor · `promote` → releaser · `human-go`/`clear-veto` → human.
   Inline the whole set at loop start, e.g. `YDB_TOKEN_ORCHESTRATOR=… YDB_TOKEN_DEVELOPER=… … node $S/…`
   (or just `YDB_TOKEN=…` for a single-identity setup — everything falls back to it).
 
@@ -92,17 +94,38 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
 
    **`work`**, **`respawn`**, or **`reclaim`** — dispatch the stage owner (`reclaim` = a prior lease
    expired; handle it identically to `work`):
-   1. **CLAIM:** `node $S/claim.mjs <id> <role> <pace.claimTtlS>` → keep **`gen`** (`ok:false` → skip).
-      Thread `gen` **verbatim** into the act you post and into CLEAR_LEASE; never reuse a gen across passes.
+   1. **CLAIM:** `node $S/claim.mjs <id> <role> <pace.claimTtlS>` (on `kind:"respawn"`, append **`--respawn`**
+      — the board's CLAIM fold then counts it toward the transition budget, v1 parity: without it a stuck
+      CI-fail respawn loop never approaches `transition_budget`, bounded only by the 60s `respawn_window_ms`
+      leg) → keep **`gen`** (`ok:false` → skip). Thread `gen` **verbatim** into the act you post and into
+      CLEAR_LEASE; never reuse a gen across passes.
    2. **DISPATCH one subagent** via the **Agent tool**, `subagent_type: "yarradev-board:<role>"`. Pass
       `{ doName, cardId, state, to, role, title }`; for a **mechanical** stage also pass
       `{ mode:"mechanical", respawn: (kind === "respawn") }` (+ the prior failure summary on a respawn,
       best-effort from this pass's log); for the **releaser** (`done→staging` deploy) also pass
-      `{ deployCmd: cfg.deploy?.staging }`. **`developer` and `releaser` → `isolation:"worktree"`.** The
+      `{ deployCmd: cfg.deploy?.staging }`; for the **security-advisor** (when `decide` dispatched the
+      advisor itself as the primary `work`/`reclaim` item — `role` is the stage's advisor, e.g. CI is green
+      but `advisor_clear` is still failing) also pass `{ repo, branch, head, watch_paths }` — the SAME
+      advisor context the inline post-submit review passes (source `repo`/`head` from the card's linked PR,
+      `watch_paths` from the stage's advisor config), so it reviews the linked head and echoes it back.
+      **`developer` and `releaser` → `isolation:"worktree"`.** The
       tester and releaser find the card's branch by `cardId` (`feature/<cardId>-…`). The releaser is a
       judgement-style worker (its `advance`/`reject`/`question` verdict routes exactly like the others). The
       subagent returns a fenced ` ```json ` verdict and never touches the board.
    3. **PARSE** the last fenced ` ```json ` block and post the matching act with `<gen>`:
+      - **Advisor verdict — applies whenever the dispatched `role` is the stage's security-advisor**, on
+        BOTH advisor-dispatch paths: (i) `decide` dispatched the advisor as the primary `work`/`reclaim`
+        item (this pass's `role` is the advisor), and (ii) the inline post-submit review below. The advisor
+        returns `{status, head, reason?}` (`reason` accompanies veto/hold/advice; the `clean` verdict omits
+        it). Post — **never "log only"** — keyed on `status`:
+        - `advice`/`clean` → `node $S/advice.mjs <id> <head> "<reason>"` — records a CLEAN review at `<head>`
+          so `advisor_clear` goes non-vacuous and the card advances next pass. **Skipping this is the
+          clean-card livelock**: no `advisor_state` row → `advisor_clear` false forever → `decide`
+          re-dispatches the advisor every tick.
+        - `veto` → `node $S/veto.mjs <id> <head> "<reason>"`; `hold` → `node $S/hold.mjs <id> <head> "<reason>"`
+          — parks the card (`decide` noops `veto-open`/`hold-open`; the board's `no_open_veto`/`no_open_hold`
+          gate blocks dev→test) until an accountable human runs `clear-veto.mjs` (a `clear_authority`
+          signatory) — *you flag; a human signs off*.
       - judgement `status:"advance"` → `node $S/move.mjs <id> <gen> <to> <role>` (posts under the stage owner).
       - judgement `status:"reject"` → `node $S/reject.mjs <id> <gen> <verdict.to> <role>` (backward REJECT edge).
         If it returns **422 `bounce budget exhausted`** the edge has thrashed too often → run
@@ -115,12 +138,9 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
           LINK_PR strands CI, so the work→LINK_PR / respawn→PUSH split is load-bearing.)
         - **Advisor review** (stages with a configured advisor): after the LINK_PR/PUSH, dispatch
           `subagent_type:"yarradev-board:security-advisor"` with `{ doName, cardId, repo, branch, head,
-          watch_paths }`. Parse its `{status, head, reason?}` (`reason` accompanies veto/hold/advice; the
-          `clean` verdict omits it): `veto` → `node $S/veto.mjs <id> <head> "<reason>"`;
-          `hold` → `node $S/hold.mjs <id> <head> "<reason>"`; `advice`/`clean` → log only. A VETO/HOLD parks
-          the card (`decide` noops `veto-open`/`hold-open`, and the board's `no_open_veto`/`no_open_hold`
-          gate blocks dev→test) until an accountable human runs `clear-veto.mjs` (a `clear_authority`
-          signatory) — *you flag; a human signs off*.
+          watch_paths }`, then route its verdict via the **Advisor verdict** rule above — `advice`/`clean` →
+          `advice.mjs` (NOT "log only" — that was the clean-card livelock), `veto` → `veto.mjs`,
+          `hold` → `hold.mjs`.
       - `status:"question"` → `node $S/escalate.mjs <id> "<the question>"` (park for a human).
         `"error"` / **no parseable block** → post nothing; log; retry next pass.
    4. **CLEAR_LEASE — always:** `node $S/clear-lease.mjs <id> <gen>` in **every** branch.

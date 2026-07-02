@@ -23,6 +23,12 @@ jobs:
           node-version: 22
       - name: Run tests
         run: node --test "test/*.test.mjs"
+      - name: Guard — no authority:veto advisor on a cheapest-tier model
+        # Already covered by the "Run tests" glob above (test/no-cheap-model-on-veto.test.mjs) — this
+        # step re-runs just that file so the guard shows as its own named CI check (Phase2a Task 5),
+        # generalizing yanyja's legal-advisor:haiku slip. Advisor model/authority live in this repo's
+        # agents/*.md frontmatter, which the platform repo's CI cannot see, so this guard lives here.
+        run: node --test test/no-cheap-model-on-veto.test.mjs
       - name: Verify vendored core.mjs is uncorrupted
         # Defense-in-depth: catches a hand-edited/corrupted vendored bundle. This
         # cannot detect drift from the @yarradev/orchestrator-core source (this repo
