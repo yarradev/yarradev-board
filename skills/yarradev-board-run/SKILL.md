@@ -29,7 +29,9 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
 - Scripts: `${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts/` (call as `node <that>/<name>.mjs`).
 - Board config (apiBase, doName, lifecycle, pace, budgets, deploy): `…/config/board.json` — copy it from
   `board.example.json` and edit (a partial `board.json` merges over the template). It holds **no secret**.
-  `budgets` = `{ transition_budget, bounce_limit, respawn_window_ms, per_edge_overrides }` (thrash caps).
+  `budgets` = `{ bounce_limit, per_edge_overrides }` (thrash caps). `transition_budget`/`respawn_window_ms`
+  are not board.json fields — the live transition-count backstop and CI-stall respawn window are
+  decide()'s client-side `DEFAULT_BUDGETS` (`orchestrator-core/src/config.ts`).
   `deploy.staging` = the shell command the **releaser** runs to deploy a validated change to staging
   (e.g. `wrangler deploy --env staging`); empty → the releaser escalates asking you to configure it.
   Deploy commands are **validated as untrusted** at config load — a single plain invocation only; no shell chaining, substitution, or redirection (put compound deploys in a committed script). Platform-pushed config never supplies command fields (§14 S3).
