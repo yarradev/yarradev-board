@@ -60,9 +60,12 @@ for (const summary of items) {
   }
   // decide() needs the enriched view (open_questions/vetoes/next_transitions), which the list
   // projection omits. Fetch it per card; a card that vanished between list and read is simply skipped.
+  // null here means "absent" (getEnriched contract) — but the vendored core's getJson now logs the
+  // underlying HTTP status to stderr first, so a PERSISTENT null across cards that is really a 401/403
+  // auth failure is diagnosable (an "HTTP 403" line) rather than looking like every card vanished.
   const card = await client.getEnriched(summary.id);
   if (!card) {
-    process.stderr.write(`skip ${summary.id} (${summary.state}): enriched fetch returned nothing\n`);
+    process.stderr.write(`skip ${summary.id} (${summary.state}): enriched fetch returned nothing (see any [boardClient] HTTP-status line above)\n`);
     continue;
   }
   const a = decide(card, cfg.lifecycle, policy, now);

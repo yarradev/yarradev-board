@@ -81,6 +81,15 @@ function assertLifecycleCoherent(lifecycle, machine) {
   if (missingEdges.length > 0) {
     problems.push(`missing edge(s) in machine.transitions: [${missingEdges.join(", ")}]`);
   }
+  const missingRejectEdges = [];
+  for (const [state, def] of Object.entries(lifecycle)) {
+    if (def.rejectTo == null) continue;
+    const hasEdge = machine.transitions.some((t) => t.from === state && t.to === def.rejectTo);
+    if (!hasEdge) missingRejectEdges.push(`${state}->${def.rejectTo}`);
+  }
+  if (missingRejectEdges.length > 0) {
+    problems.push(`missing REJECT edge(s) in machine.transitions: [${missingRejectEdges.join(", ")}]`);
+  }
   if (problems.length > 0) {
     throw new Error(`assertLifecycleCoherent: lifecycle disagrees with GET /config machine \u2014 ${problems.join("; ")}`);
   }
@@ -154,7 +163,7 @@ function reduce(verdict, card, lifecycle) {
     }
     case "reject": {
       const to = verdict.to;
-      const validBackEdge = to != null && lifecycle[to]?.to === card.state;
+      const validBackEdge = to != null && (st?.rejectTo != null ? to === st.rejectTo : lifecycle[to]?.to === card.state);
       if (!validBackEdge) return escalate(card, `REJECT on undefined backward edge ${card.state}->${to ?? "?"}`);
       return [{ type: "REJECT", item_id: card.id, gen: card.current_gen, data: { to } }];
     }
@@ -208,7 +217,10 @@ var BoardClient = class {
   }
   async getJson(suffix) {
     const res = await this.fetchImpl(this.url(suffix), { headers: this.headers() });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.error(`[boardClient] GET ${suffix} \u2192 HTTP ${res.status} ${res.statusText || ""} (returning null)`.trimEnd());
+      return null;
+    }
     return await res.json();
   }
   // ── reads ──────────────────────────────────────────────────────────────────
