@@ -139,7 +139,7 @@ function reduce(verdict, card, lifecycle) {
       return card.linked_head_sha == null ? [{ type: "LINK_PR", item_id: card.id, gen: card.current_gen, data }] : [{ type: "PUSH", item_id: card.id, gen: card.current_gen, data }];
     }
     case "question":
-      return [{ type: "ASK", item_id: card.id, data: { cat: verdict.category, reason: verdict.reason ?? "" } }];
+      return [{ type: "ASK", item_id: card.id, data: { cat: verdict.category, text: verdict.reason ?? "" } }];
     case "error":
       return escalate(card, `worker error: ${verdict.reason ?? "unspecified"}`);
     case "veto":
@@ -192,7 +192,11 @@ var BoardClient = class {
     params.set("limit", String(opts.limit ?? 200));
     if (opts.state) params.set("state", opts.state);
     if (opts.after) params.set("after", opts.after);
-    return await this.getJson(`/cards?${params.toString()}`) ?? [];
+    const body = await this.getJson(
+      `/cards?${params.toString()}`
+    );
+    if (body == null) return [];
+    return Array.isArray(body) ? body : body.items ?? [];
   }
   async getEnriched(id) {
     return this.getJson(`/cards/${encodeURIComponent(id)}/enriched`);
@@ -287,8 +291,12 @@ var BoardClient = class {
     return this.act({ type: "CLEAR_LEASE", item_id: id, gen, data: {} });
   }
   // GAP: a generic ASK (open question), distinct from escalate()'s fixed cat:"escalation".
+  // The board's ASK fold (workers/board/src/storage.ts ~L831) reads data.text (and data.cat) — it
+  // does NOT read data.reason, so the human-facing reason is posted under the `text` key the fold
+  // actually persists into the question row. Method signature unchanged (reason arg name kept for
+  // callers like escalate.mjs); only the wire key changes.
   ask(id, cat, reason = "") {
-    return this.act({ type: "ASK", item_id: id, data: { cat, reason } });
+    return this.act({ type: "ASK", item_id: id, data: { cat, text: reason } });
   }
   // Surface a card for human attention (gen-exempt). Uses the dedicated ESCALATE act, whose fold sets
   // a NON-blocking escalated/escalated_reason surfacing flag (workers/board/src/storage.ts) — never
