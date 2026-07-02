@@ -92,8 +92,11 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
 
    **`work`**, **`respawn`**, or **`reclaim`** — dispatch the stage owner (`reclaim` = a prior lease
    expired; handle it identically to `work`):
-   1. **CLAIM:** `node $S/claim.mjs <id> <role> <pace.claimTtlS>` → keep **`gen`** (`ok:false` → skip).
-      Thread `gen` **verbatim** into the act you post and into CLEAR_LEASE; never reuse a gen across passes.
+   1. **CLAIM:** `node $S/claim.mjs <id> <role> <pace.claimTtlS>` (on `kind:"respawn"`, append **`--respawn`**
+      — the board's CLAIM fold then counts it toward the transition budget, v1 parity: without it a stuck
+      CI-fail respawn loop never approaches `transition_budget`, bounded only by the 60s `respawn_window_ms`
+      leg) → keep **`gen`** (`ok:false` → skip). Thread `gen` **verbatim** into the act you post and into
+      CLEAR_LEASE; never reuse a gen across passes.
    2. **DISPATCH one subagent** via the **Agent tool**, `subagent_type: "yarradev-board:<role>"`. Pass
       `{ doName, cardId, state, to, role, title }`; for a **mechanical** stage also pass
       `{ mode:"mechanical", respawn: (kind === "respawn") }` (+ the prior failure summary on a respawn,
