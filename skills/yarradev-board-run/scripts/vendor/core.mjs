@@ -170,7 +170,7 @@ function reduce(verdict, card, lifecycle) {
       return [{ type: "HOLD", item_id: card.id, data: { role: verdict.role, head: verdict.head, reason: verdict.reason ?? "" } }];
     case "advice":
     case "clean":
-      return [{ type: "ADVICE", item_id: card.id, data: { reviewed_head: verdict.head } }];
+      return [{ type: "ADVICE", item_id: card.id, data: { reviewed_head: verdict.head, reason: verdict.reason ?? "" } }];
     default: {
       const _exhaustive = verdict;
       return escalate(card, `reduce: unhandled verdict (${_exhaustive.status})`);
@@ -298,6 +298,13 @@ var BoardClient = class {
   }
   hold(id, reason = "", head = null) {
     return this.act({ type: "HOLD", item_id: id, data: { role: "security-advisor", reason, head } });
+  }
+  // Non-binding advisor review (gen-exempt). Records a CLEAN review at data.reviewed_head so the board's
+  // advisor_clear gate goes non-vacuous and the card advances — a clean/advice verdict does NOT park it.
+  // Posting this at every advisor dispatch is what stops a clean card's advisor being re-dispatched each
+  // tick (the clean-card livelock: no advisor_state row → advisor_clear false forever → re-dispatch).
+  advice(id, head, reason = "") {
+    return this.act({ type: "ADVICE", item_id: id, data: { reviewed_head: head, reason } });
   }
   // Accountable-human clear (gen-exempt). The board authorizes CLEAR_VETO only for a clear_authority
   // signatory identity.
