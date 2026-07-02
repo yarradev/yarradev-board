@@ -61,11 +61,13 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
 - **Per-role identities (least privilege).** Each act is posted under the **role that produced it**, via a
   per-role token: the scripts read `YDB_TOKEN_<ROLE>` (upper-case, `-`→`_`: `YDB_TOKEN_DEVELOPER`,
   `YDB_TOKEN_SECURITY_ADVISOR`, `YDB_TOKEN_ORCHESTRATOR`, `YDB_TOKEN_DESIGNER`, `YDB_TOKEN_TESTER`,
-  `YDB_TOKEN_RELEASER`, `YDB_TOKEN_HUMAN`), **falling back to the shared `YDB_TOKEN`** if a role's token
-  isn't set (the fallback is logged to stderr). You hold **all** the role tokens and the scripts select
-  the right one per act; **subagents still never see any token**. Mapping: `claim`/`clear-lease`/`escalate`
-  → orchestrator · `move`/`reject` → the **stage owner** (passed as the last arg) · `link-pr`/`push` →
-  developer · `veto`/`hold`/`advice` → security-advisor · `promote` → releaser · `human-go`/`clear-veto` → human.
+  `YDB_TOKEN_RELEASER`, `YDB_TOKEN_ANALYST`, `YDB_TOKEN_HUMAN`), **falling back to the shared `YDB_TOKEN`**
+  if a role's token isn't set (the fallback is logged to stderr). You hold **all** the role tokens and the
+  scripts select the right one per act; **subagents still never see any token**. Mapping:
+  `claim`/`clear-lease`/`escalate` → orchestrator · `move`/`reject` → the **stage owner** (passed as the
+  last arg) · `link-pr`/`push` → developer · `veto`/`hold`/`advice` → security-advisor · `promote` →
+  releaser (or the barrier's `promoteAs` role, e.g. analyst) · `create` (epic decomposition) → analyst ·
+  `human-go`/`clear-veto` → human.
   Inline the whole set at loop start, e.g. `YDB_TOKEN_ORCHESTRATOR=… YDB_TOKEN_DEVELOPER=… … node $S/…`
   (or just `YDB_TOKEN=…` for a single-identity setup — everything falls back to it).
 
@@ -130,6 +132,9 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
       but `advisor_clear` is still failing) also pass `{ repo, branch, head, watch_paths }` — the SAME
       advisor context the inline post-submit review passes (source `repo`/`head` from the card's linked PR,
       `watch_paths` from the stage's advisor config), so it reviews the linked head and echoes it back.
+      For the **analyst** (`epic_analysis`/`epic_decompose`), the generic `{ doName, cardId, state, to,
+      role, title }` already carries the epic's title/intent and the target `to` — no extra context
+      needed; do not hardcode which stage it's dispatched at, read it from `state`.
       **`developer` and `releaser` → `isolation:"worktree"`.** The
       tester and releaser find the card's branch by `cardId` (`feature/<cardId>-…`). The releaser is a
       judgement-style worker (its `advance`/`reject`/`question` verdict routes exactly like the others). The
@@ -152,6 +157,19 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
       - judgement `status:"reject"` → `node $S/reject.mjs <id> <gen> <verdict.to> <role>` (backward REJECT edge).
         If it returns **422 `bounce budget exhausted`** the edge has thrashed too often → run
         `node $S/escalate.mjs <id> "bounce budget: <edge>"` (park for a human) instead of re-looping.
+      - **analyst `status:"decomposed"`** (`epic_decompose`, `evidence`-free — the fields are top-level:
+        `to`, `children:[{title}]`, `summary`) — a **zero-length `children` array is not a valid
+        decomposition**: treat it exactly like `status:"question"` below (escalate/park), mirroring
+        `reduce()`'s escalate-on-0-children. Otherwise, derive `<epicId>`/`<gen>`/`<to>` from this pass's
+        state (never hardcode a stage name) and:
+        1. For each `children[i]`, in order: `node $S/create.mjs "<children[i].title>" --parent <epicId>`
+           (mints a child story card under the epic; the board bumps the epic's `children_total` per
+           CREATE). A CREATE failure mid-loop is **not** silently swallowed — log it and stop issuing
+           further CREATEs for this card this pass; the next pass re-dispatches the analyst (still at
+           `epic_decompose`, since the epic hasn't moved) and it can re-decompose from scratch.
+        2. Then `node $S/move.mjs <epicId> <gen> <to> analyst` — advances the epic to `<to>` (the barrier
+           stage) now that its children exist.
+        3. CLEAR_LEASE as usual (every branch clears the lease — see step 4 below).
       - mechanical `status:"submitted"` `evidence:{repo, pr_number, head}` — choose the act by **`kind`**,
         never by a second snapshot read:
         - `kind:"work"` (first submission) → `node $S/link-pr.mjs <id> <gen> <repo> <pr_number> <head>`.
