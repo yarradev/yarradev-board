@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const CREATE = join(HERE, "..", "skills", "yarradev-board-run", "scripts", "create.mjs");
+const CREATE = join(HERE, "..", "skills", "yarradev-run", "scripts", "create.mjs");
 
 function startStub() {
   const requests = [];

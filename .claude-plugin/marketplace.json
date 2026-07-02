@@ -1,10 +1,10 @@
 {
   "name": "yarradev-local",
   "owner": { "name": "Nabeel Shaheen" },
-  "description": "Local single-plugin marketplace for the yarradev-board (Cloudflare HTTP-board) orchestrator — dogfood/dev install from this working copy.",
+  "description": "Local single-plugin marketplace for the yarradev (Cloudflare HTTP-board) orchestrator — dogfood/dev install from this working copy.",
   "plugins": [
     {
-      "name": "yarradev-board",
+      "name": "yarradev",
       "source": "./",
       "description": "yarradev board orchestrator over a Cloudflare HTTP board (acme:main) + role subagents."
     }

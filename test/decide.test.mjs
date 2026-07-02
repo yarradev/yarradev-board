@@ -20,7 +20,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { decide } from "../skills/yarradev-board-run/scripts/vendor/core.mjs";
+import { decide } from "../skills/yarradev-run/scripts/vendor/core.mjs";
 
 const POLICY = { advisors: [] }; // core.decide currently sources the advisor role from lifecycle, not policy
 const Q = { q_seq: 1, cat: "escalation", deadline_ts: null, text: "waiting on a human" }; // an open question
@@ -166,7 +166,7 @@ test("decide (human gate): promote a human-gated stage; terminal + veto + blocke
 // Pin the SHIPPED config (config/board.example.json) — not a hand-written fixture — to decide(), so a
 // state rename (prod→production) or a reshape of `done` (back to terminal) is caught by the suite.
 const EXAMPLE = JSON.parse(
-  readFileSync(new URL("../skills/yarradev-board-run/config/board.example.json", import.meta.url), "utf8")
+  readFileSync(new URL("../skills/yarradev-run/config/board.example.json", import.meta.url), "utf8")
 );
 
 test("decide (shipped board.example.json): full backlog→spec→dev→test→done→staging→prod lifecycle routes correctly", () => {

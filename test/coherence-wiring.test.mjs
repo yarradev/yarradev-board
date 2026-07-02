@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const LIST_READY = join(HERE, "..", "skills", "yarradev-board-run", "scripts", "list-ready.mjs");
+const LIST_READY = join(HERE, "..", "skills", "yarradev-run", "scripts", "list-ready.mjs");
 
 // All 7 shipped states, but the dev->test forward edge is intentionally omitted → the plugin's
 // board.example.json lifecycle (which HAS dev->test) is incoherent with this machine.

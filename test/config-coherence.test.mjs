@@ -1,6 +1,6 @@
 /*
  * assertLifecycleCoherent (Task 8 — single-source the lifecycle) — vendored from orchestrator-core
- * (skills/yarradev-board-run/scripts/vendor/core.mjs). Confirms the SHIPPED board.example.json
+ * (skills/yarradev-run/scripts/vendor/core.mjs). Confirms the SHIPPED board.example.json
  * lifecycle is coherent with a representative BoardMachine (as GET /config would return for a live
  * board running that same 11-state lifecycle, 7 base + 4 epic-tier as of Phase 2b Task 8), and pins
  * the fail-closed diff behavior list-ready.mjs
@@ -12,10 +12,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { assertLifecycleCoherent } from "../skills/yarradev-board-run/scripts/vendor/core.mjs";
+import { assertLifecycleCoherent } from "../skills/yarradev-run/scripts/vendor/core.mjs";
 
 const EXAMPLE = JSON.parse(
-  readFileSync(new URL("../skills/yarradev-board-run/config/board.example.json", import.meta.url), "utf8")
+  readFileSync(new URL("../skills/yarradev-run/config/board.example.json", import.meta.url), "utf8")
 );
 
 /** A representative BoardMachine for a lifecycle — mirrors what a live board's GET /config would

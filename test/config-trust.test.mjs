@@ -2,10 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   validateCommandString, assertSafeCommandFields, mergePlatformConfig, COMMAND_FIELD_PATHS,
-} from "../skills/yarradev-board-run/scripts/config-trust.mjs";
+} from "../skills/yarradev-run/scripts/config-trust.mjs";
 import {
   validateLoadedConfig,
-} from "../skills/yarradev-board-run/scripts/plugin-io.mjs";
+} from "../skills/yarradev-run/scripts/plugin-io.mjs";
 
 test("validateCommandString accepts plain deploy commands + empty sentinel", () => {
   for (const s of ["", "wrangler deploy --env staging", "npm run deploy:staging",
@@ -62,11 +62,11 @@ import { readFileSync } from "node:fs";
 
 test("config-trust.mjs and plugin-io.mjs contain no eval() or new Function()", () => {
   const configTrustSrc = readFileSync(
-    new URL("../skills/yarradev-board-run/scripts/config-trust.mjs", import.meta.url),
+    new URL("../skills/yarradev-run/scripts/config-trust.mjs", import.meta.url),
     "utf8",
   );
   const pluginIoSrc = readFileSync(
-    new URL("../skills/yarradev-board-run/scripts/plugin-io.mjs", import.meta.url),
+    new URL("../skills/yarradev-run/scripts/plugin-io.mjs", import.meta.url),
     "utf8",
   );
   assert.ok(!configTrustSrc.includes("eval("), "config-trust.mjs must not contain eval(");

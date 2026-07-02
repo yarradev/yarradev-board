@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const PROMOTE = join(HERE, "..", "skills", "yarradev-board-run", "scripts", "promote.mjs");
+const PROMOTE = join(HERE, "..", "skills", "yarradev-run", "scripts", "promote.mjs");
 
 function startStub() {
   const acts = []; // { authorization, body } captured per POST /acts (the MOVE)

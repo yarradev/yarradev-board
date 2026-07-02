@@ -1,9 +1,9 @@
 ---
-name: yarradev-board-run
+name: yarradev-run
 description: The yarradev board orchestrator — a reconciliation loop that drives every ready card through the lifecycle (spec→dev→test→done→staging→prod, with mechanical CI, a security-advisor, a releaser staging deploy, and a human-GO production gate) by reading a yarradev HTTP board, claiming a lease, dispatching the stage's role subagent via the Agent tool, parsing its verdict, and posting the resulting act. Run continuously via /loop.
 ---
 
-# yarradev-board-run — the orchestrator
+# yarradev-run — the orchestrator
 
 You are the **conductor** of a yarradev board. You **route; you do not do role work**. Each pass you
 reconcile the board (desired state) toward reality by dispatching role subagents, then yield. You hold
@@ -26,7 +26,7 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
 (designer & developer opus·high, tester sonnet·low).
 
 ## Config & auth
-- Scripts: `${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts/` (call as `node <that>/<name>.mjs`).
+- Scripts: `${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts/` (call as `node <that>/<name>.mjs`).
 - Board config (apiBase, doName, lifecycle, pace, budgets, deploy): `…/config/board.json` — copy it from
   `board.example.json` and edit (a partial `board.json` merges over the template). It holds **no secret**.
   `budgets` = `{ bounce_limit, per_edge_overrides }` (thrash caps). `transition_budget`/`respawn_window_ms`
@@ -72,7 +72,7 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
   (or just `YDB_TOKEN=…` for a single-identity setup — everything falls back to it).
 
 ## Per-pass procedure (one /loop invocation)
-Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
+Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
 
 1. **List ready cards:** `node $S/list-ready.mjs` → one JSON line per actionable card:
    `{ "kind":"work"|"advance"|"respawn"|"reclaim"|"promote"|"escalate", "id", "state", "role"?, "to"?, "reason"?, "title" }`.
@@ -123,7 +123,7 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
       CI-fail respawn loop never approaches `transition_budget`, bounded only by the 60s `respawn_window_ms`
       leg) → keep **`gen`** (`ok:false` → skip). Thread `gen` **verbatim** into the act you post and into
       CLEAR_LEASE; never reuse a gen across passes.
-   2. **DISPATCH one subagent** via the **Agent tool**, `subagent_type: "yarradev-board:<role>"`. Pass
+   2. **DISPATCH one subagent** via the **Agent tool**, `subagent_type: "yarradev:<role>"`. Pass
       `{ doName, cardId, state, to, role, title }`; for a **mechanical** stage also pass
       `{ mode:"mechanical", respawn: (kind === "respawn") }` (+ the prior failure summary on a respawn,
       best-effort from this pass's log); for the **releaser** (`done→staging` deploy) also pass
@@ -177,7 +177,7 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
         - **Do NOT MOVE** — the card waits for CI; a later `advance` pass moves it. (A PUSH with no prior
           LINK_PR strands CI, so the work→LINK_PR / respawn→PUSH split is load-bearing.)
         - **Advisor review** (stages with a configured advisor): after the LINK_PR/PUSH, dispatch
-          `subagent_type:"yarradev-board:security-advisor"` with `{ doName, cardId, repo, branch, head,
+          `subagent_type:"yarradev:security-advisor"` with `{ doName, cardId, repo, branch, head,
           watch_paths }`, then route its verdict via the **Advisor verdict** rule above — `advice`/`clean` →
           `advice.mjs` (NOT "log only" — that was the clean-card livelock), `veto` → `veto.mjs`,
           `hold` → `hold.mjs`.
@@ -185,7 +185,7 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
         `"error"` / **no parseable block** → post nothing; log; retry next pass.
    4. **CLEAR_LEASE — always:** `node $S/clear-lease.mjs <id> <gen>` in **every** branch.
    5. Log a one-line outcome.
-3. **Yield.** Re-run via `/loop <interval> /yarradev-board:yarradev-board-run` (interval ≥
+3. **Yield.** Re-run via `/loop <interval> /yarradev:yarradev-run` (interval ≥
    `pace.minLoopIntervalS`, default 5m; keep it under your prompt-cache TTL for cache hits).
 
 ## Discipline & safety
@@ -213,7 +213,7 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
 Seed one card in `spec`; give the orchestrator the board token **in your launch message** — it inlines
 it per call. Do **NOT** `export` it: `/loop` dispatches role subagents in this same shell, so an exported
 token is inherited by every subagent (readable via `printenv`) and a prompt-injected one could forge acts
-under your identity. Then run `/loop 30s /yarradev-board:yarradev-board-run`. Watch it move spec→dev
+under your identity. Then run `/loop 30s /yarradev:yarradev-run`. Watch it move spec→dev
 (designer) → dev→test (developer, gated on CI + any advisor) → test→done (tester) → done→staging (releaser
 runs `deploy.staging`) → and park at `staging` awaiting a human GO; a `byKind:human` identity runs
 `node $S/human-go.mjs <id>` and the next pass promotes staging→prod. Confirm `node $S/list-ready.mjs` goes
