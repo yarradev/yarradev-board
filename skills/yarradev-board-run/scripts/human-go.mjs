@@ -5,13 +5,12 @@
  * HUMAN_GO cap) — the orchestrator's agent token is denied, so agents cannot self-approve a release.
  * After this, the next promote MOVE into prod commits. Prints { ok, status, outcome }.
  */
-import { BoardClient } from "./lib.mjs";
+import { makeClient, emit } from "./plugin-io.mjs";
 
 const [id] = process.argv.slice(2);
 if (!id) {
   console.error("usage: human-go.mjs <id>");
   process.exit(2);
 }
-const r = await new BoardClient({ role: "human" }).humanGo(id);
-process.stdout.write(JSON.stringify(r) + "\n");
-process.exit(r.ok ? 0 : 1);
+const r = await makeClient({ role: "human" }).humanGo(id);
+process.exit(emit(r));

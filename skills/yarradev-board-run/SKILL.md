@@ -62,9 +62,10 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
 Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
 
 1. **List ready cards:** `node $S/list-ready.mjs` → one JSON line per actionable card:
-   `{ "kind":"work"|"advance"|"respawn"|"promote"|"escalate", "id", "state", "role"?, "to"?, "reason"?, "title" }`.
-   `work` carries role+to; `advance` carries role+to; `respawn` carries role; `promote` carries to (a
-   human-gated stage); `escalate` carries reason (a budget is exhausted / CI stalled — park for a human).
+   `{ "kind":"work"|"advance"|"respawn"|"reclaim"|"promote"|"escalate", "id", "state", "role"?, "to"?, "reason"?, "title" }`.
+   `work` carries role+to; `advance` carries role+to; `respawn` carries role; `reclaim` carries role+to
+   (a prior lease expired — take it over and re-dispatch the owner, exactly like `work`); `promote` carries
+   to (a human-gated stage); `escalate` carries reason (a budget is exhausted / CI stalled — park for a human).
    Waiting cards (terminal/blocked/leased/ci-pending/ci-absent/…) are logged to stderr and skipped.
 2. **For each actionable card, sequentially, up to `pace.maxCardsPerPass` (default 1), branch on `kind`:**
 
@@ -89,7 +90,8 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
       and the prior `done→staging` deploy CLAIM bumps the gen — a GO posted while the card is still in `done`
       is invalidated by that bump.
 
-   **`work`** or **`respawn`** — dispatch the stage owner:
+   **`work`**, **`respawn`**, or **`reclaim`** — dispatch the stage owner (`reclaim` = a prior lease
+   expired; handle it identically to `work`):
    1. **CLAIM:** `node $S/claim.mjs <id> <role> <pace.claimTtlS>` → keep **`gen`** (`ok:false` → skip).
       Thread `gen` **verbatim** into the act you post and into CLEAR_LEASE; never reuse a gen across passes.
    2. **DISPATCH one subagent** via the **Agent tool**, `subagent_type: "yarradev-board:<role>"`. Pass

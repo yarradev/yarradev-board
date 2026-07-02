@@ -6,13 +6,16 @@
  * Used on budget exhaustion (transition budget, CI stall, or a board "bounce budget exhausted" 422).
  * Prints { ok, status, outcome }. Exit 0 on committed, 1 otherwise.
  */
-import { BoardClient } from "./lib.mjs";
+import { makeClient, emit } from "./plugin-io.mjs";
 
 const [id, ...rest] = process.argv.slice(2);
 if (!id) {
   console.error("usage: escalate.mjs <id> [reason...]");
   process.exit(2);
 }
-const r = await new BoardClient({ role: "orchestrator" }).escalate(id, rest.join(" "));
-process.stdout.write(JSON.stringify(r) + "\n");
-process.exit(r.ok ? 0 : 1);
+// Parking a card for a human = an ASK with cat:"escalation" (the board sets blocked=true so decide()
+// skips it until a human ANSWERs). Use the vendored core's ask() — NOT its escalate(): core.escalate()
+// posts the ESCALATE act, a NON-blocking surfacing flag that would NOT park the card, breaking the
+// "budget exhausted → park for a human" contract this script (and SKILL.md step "escalate") relies on.
+const r = await makeClient({ role: "orchestrator" }).ask(id, "escalation", rest.join(" "));
+process.exit(emit(r));

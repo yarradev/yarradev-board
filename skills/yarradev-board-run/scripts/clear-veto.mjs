@@ -5,13 +5,12 @@
  * signatory identity (set YDB_TOKEN to the signatory's bearer). "Advisor flags; a human signs off."
  * Prints { ok, status, outcome }. Exit 0 on committed, 1 otherwise.
  */
-import { BoardClient } from "./lib.mjs";
+import { makeClient, emit } from "./plugin-io.mjs";
 
 const [id] = process.argv.slice(2);
 if (!id) {
   console.error("usage: clear-veto.mjs <id>");
   process.exit(2);
 }
-const r = await new BoardClient({ role: "human" }).clearVeto(id);
-process.stdout.write(JSON.stringify(r) + "\n");
-process.exit(r.ok ? 0 : 1);
+const r = await makeClient({ role: "human" }).clearVeto(id);
+process.exit(emit(r));
