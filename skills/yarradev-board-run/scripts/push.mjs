@@ -6,13 +6,12 @@
  * link-pr.mjs instead — PUSH without a prior pr_link row strands CI (no row for facts to match).
  * <head> MUST be the full 40-char SHA. Prints { ok, status, outcome }. Exit 0 on committed, 1 otherwise.
  */
-import { BoardClient } from "./lib.mjs";
+import { makeClient, emit } from "./plugin-io.mjs";
 
 const [id, gen, repo, pr, head] = process.argv.slice(2);
 if (!id || gen === undefined || !repo || !pr || !head) {
   console.error("usage: push.mjs <id> <gen> <repo> <pr_number> <head>");
   process.exit(2);
 }
-const r = await new BoardClient({ role: "developer" }).push(id, Number(gen), { repo, pr_number: Number(pr), head });
-process.stdout.write(JSON.stringify(r) + "\n");
-process.exit(r.ok ? 0 : 1);
+const r = await makeClient({ role: "developer" }).push(id, Number(gen), { repo, pr_number: Number(pr), head });
+process.exit(emit(r));

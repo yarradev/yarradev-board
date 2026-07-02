@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveToken } from "../skills/yarradev-board-run/scripts/lib.mjs";
+import { resolveToken } from "../skills/yarradev-board-run/scripts/plugin-io.mjs";
 
 // resolveToken reads process.env, so isolate it: clear every YDB_TOKEN* var, set the case's env,
 // then restore. (A real YDB_TOKEN in the ambient env must not leak into these assertions.)

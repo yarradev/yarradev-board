@@ -5,11 +5,14 @@
  *  - the webhook worker (YDB_WEBHOOK, default http://localhost:8803) is up with secret `local-whsec`;
  *  - CATALOG has installation '1' → repo_board(YDB_REPO default owner/repo → the board).
  * See README "Local mechanical-gate demo". Skips without YDB_IT so `npm test` stays offline-green.
+ *
+ * Drives the vendored orchestrator-core client (makeClient → ./vendor/core.mjs); its methods return an
+ * AppendResult, so assertions read outcome/status and derive gen via genOf().
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { BoardClient } from "../skills/yarradev-board-run/scripts/lib.mjs";
+import { makeClient, genOf } from "../skills/yarradev-board-run/scripts/plugin-io.mjs";
 
 const skip = process.env.YDB_IT === "1" ? false : "set YDB_IT=1 + boot the ci-gated board/webhook to run";
 const WEBHOOK = process.env.YDB_WEBHOOK ?? "http://localhost:8803";
@@ -35,7 +38,7 @@ async function deliverCheckRun(head, conclusion) {
 
 test("mechanical gate: LINK_PR → MOVE blocked (ci_green) → green check_run ingested → advance", { skip }, async () => {
   const board = process.env.YDB_DO_NAME ?? "acme:ci";
-  const client = new BoardClient({ doName: board, apiBase: process.env.YDB_API_BASE, token: process.env.YDB_TOKEN });
+  const client = makeClient({ doName: board, apiBase: process.env.YDB_API_BASE, token: process.env.YDB_TOKEN });
   const id = `card-ci-${Date.now()}`;
   const head = Date.now().toString(16).padEnd(40, "0").slice(0, 40); // synthetic full-length sha (board matches strings)
   const pr = Date.now() % 1000000; // unique per run → avoids LINK_PR (repo,pr_number) immutability collisions
@@ -45,21 +48,24 @@ test("mechanical gate: LINK_PR → MOVE blocked (ci_green) → green check_run i
 
   // orchestrator's mechanical "work" branch: claim → LINK_PR → clear
   const c1 = await client.claim(id, "developer", 1800);
-  assert.equal(c1.ok, true, `claim failed: ${JSON.stringify(c1)}`);
-  const link = await client.linkPr(id, c1.gen, { repo: REPO, pr_number: pr, head });
-  assert.equal(link.ok, true, `LINK_PR failed (LINK_PR cap on board ${board}?): ${JSON.stringify(link)}`);
+  assert.equal(c1.outcome, "committed", `claim failed: ${JSON.stringify(c1)}`);
+  const gen1 = genOf(c1);
+  const link = await client.linkPr(id, gen1, { repo: REPO, pr_number: pr, head });
+  assert.equal(link.outcome, "committed", `LINK_PR failed (LINK_PR cap on board ${board}?): ${JSON.stringify(link)}`);
 
   // MOVE dev→test must be gate-blocked while ci_rollup is absent
-  const blocked = await client.move(id, c1.gen, "test");
-  assert.equal(blocked.ok, false);
+  const blocked = await client.move(id, gen1, "test");
+  assert.notEqual(blocked.outcome, "committed");
   assert.equal(blocked.status, 422, `expected 422 gate_blocked (ci_green); got ${blocked.status}/${blocked.outcome}`);
-  await client.clearLease(id, c1.gen);
+  await client.clearLease(id, gen1);
 
   // deliver a green check_run for the linked head; poll until ci_rollup flips (queue may lag locally)
   assert.equal(await deliverCheckRun(head, "success"), 200, "webhook should accept the signed delivery");
   let rollup = "absent";
   for (let i = 0; i < 24; i++) {
-    const c = (await client.listCards()).find((x) => x.id === id);
+    const listed = await client.listCards();
+    const cards = Array.isArray(listed) ? listed : (listed?.items ?? []);
+    const c = cards.find((x) => x.id === id);
     rollup = c?.ci_rollup ?? "absent";
     if (rollup === "success") break;
     await new Promise((r) => setTimeout(r, 250));
@@ -68,8 +74,9 @@ test("mechanical gate: LINK_PR → MOVE blocked (ci_green) → green check_run i
 
   // gate now passes: claim → MOVE dev→test commits (the "advance" branch)
   const c2 = await client.claim(id, "developer", 1800);
-  assert.equal(c2.ok, true, `re-claim failed: ${JSON.stringify(c2)}`);
-  const moved = await client.move(id, c2.gen, "test");
-  assert.equal(moved.ok, true, `MOVE dev→test should commit once CI is green: ${JSON.stringify(moved)}`);
-  await client.clearLease(id, c2.gen);
+  assert.equal(c2.outcome, "committed", `re-claim failed: ${JSON.stringify(c2)}`);
+  const gen2 = genOf(c2);
+  const moved = await client.move(id, gen2, "test");
+  assert.equal(moved.outcome, "committed", `MOVE dev→test should commit once CI is green: ${JSON.stringify(moved)}`);
+  await client.clearLease(id, gen2);
 });
