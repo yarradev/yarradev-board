@@ -18,5 +18,6 @@
   },
   "deploy": { "staging": "./scripts/deploy.sh" },
   "pace": { "maxCardsPerPass": 1, "claimTtlS": 1800, "minLoopIntervalS": 300 },
-  "budgets": { "transition_budget": 50, "bounce_limit": 3, "respawn_window_ms": 60000, "per_edge_overrides": {} }
+  "_budgets_note": "transition_budget and respawn_window_ms were struck from budgets below (Phase2a Task 4) — neither is read by the board or the plugin loop; the live transition-count backstop is decide()'s client-side DEFAULT_BUDGETS (orchestrator-core/src/config.ts), and the live CI-stall respawn window is that same DEFAULT_BUDGETS.respawn_window_ms, not this file. bounce_limit/per_edge_overrides below ARE live — they compile into the board's within_budget REJECT gate.",
+  "budgets": { "bounce_limit": 3, "per_edge_overrides": {} }
 }

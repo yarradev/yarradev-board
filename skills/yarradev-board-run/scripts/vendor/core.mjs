@@ -50,9 +50,12 @@ function parseVerdict(text) {
   }
 }
 
+// ../shared/src/budgets.ts
+var TRANSITION_BUDGET_DEFAULT = 50;
+
 // src/config.ts
 var DEFAULT_BUDGETS = {
-  transition_budget: 50,
+  transition_budget: TRANSITION_BUDGET_DEFAULT,
   respawn_window_ms: 6e4
 };
 var stageOf = (lifecycle, state) => lifecycle[state];
