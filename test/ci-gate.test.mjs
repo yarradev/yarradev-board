@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { makeClient, genOf } from "../skills/yarradev-board-run/scripts/plugin-io.mjs";
+import { makeClient, genOf } from "../skills/yarradev-run/scripts/plugin-io.mjs";
 
 const skip = process.env.YDB_IT === "1" ? false : "set YDB_IT=1 + boot the ci-gated board/webhook to run";
 const WEBHOOK = process.env.YDB_WEBHOOK ?? "http://localhost:8803";

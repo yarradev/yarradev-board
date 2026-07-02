@@ -1,11 +1,11 @@
-# yarradev-board
+# yarradev
 
 A Claude Code plugin: a **reconciliation-loop orchestrator** that drives a **yarradev HTTP board**
 (the Cloudflare Durable Object board in `yarradev-platform`) and dispatches **role subagents**
 (designer → developer → tester, plus a **security-advisor**, a **releaser** staging deploy, and a
 **human production gate**) via the **Agent tool** — running on **your own Claude subscription**.
 
-You install the plugin, point it at your board, and run `/loop … /yarradev-board:yarradev-board-run`.
+You install the plugin, point it at your board, and run `/loop … /yarradev:yarradev-run`.
 Each pass it claims a ready card, dispatches the stage's role subagent to do the real work, and posts
 the resulting transition back to the board.
 
@@ -30,7 +30,7 @@ calls**; it only stores the work log and enforces the state machine. This plugin
 
 ```
 /plugin marketplace add yarradev/public-claude-plugins
-/plugin install yarradev-board@yarradev
+/plugin install yarradev@yarradev-local
 ```
 
 Or load locally during development by enabling the plugin from this checkout.
@@ -39,7 +39,7 @@ Or load locally during development by enabling the plugin from this checkout.
 
 1. Copy the config template and edit it (no secret goes here):
    ```
-   cp skills/yarradev-board-run/config/board.example.json skills/yarradev-board-run/config/board.json
+   cp skills/yarradev-run/config/board.example.json skills/yarradev-run/config/board.json
    # set apiBase, doName, and the lifecycle / pace / budgets
    ```
 2. Have your board token ready (shaped `<token_id>.<secret>`). Give it to the orchestrator at loop
@@ -64,7 +64,7 @@ minLoopIntervalS:300 }`, budgets `{ transition_budget:50, bounce_limit:3, respaw
 ```
 /model sonnet      # the orchestrator's own LLM work is just routing — keep it cheap
 /effort low
-/loop 5m /yarradev-board:yarradev-board-run
+/loop 5m /yarradev:yarradev-run
 ```
 
 ## Local end-to-end demo (against the platform stack)
@@ -99,7 +99,7 @@ advisor VETO, the releaser staging deploy, and human GO). Boot the **board** (:8
    `POST /boards/acme:flow/acts {"type":"CREATE","item_id":"card-1","data":{"state":"spec","title":"<intent>"}}`.
 5. **Run the loop:** give the orchestrator `orch1.s3cret` in your launch message (it inlines it per call;
    don't `export` it), set `/model sonnet` + `/effort low`, then `/loop 30s
-   /yarradev-board:yarradev-board-run`, and watch each gate:
+   /yarradev:yarradev-run`, and watch each gate:
    - **spec→dev** — designer writes the spec → MOVE.
    - **dev** (mechanical + advisor) — developer (own worktree, real commit, pushes a branch) returns
      `submitted{repo,pr_number,head}` → orchestrator `LINK_PR`s; the security-advisor reviews the diff

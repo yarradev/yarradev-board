@@ -34,5 +34,5 @@ jobs:
         # cannot detect drift from the @yarradev/orchestrator-core source (this repo
         # has no access to that source) — the platform repo's check-vendored-core.sh
         # (.github/workflows/core.yml) is the authoritative guard for that.
-        working-directory: skills/yarradev-board-run/scripts/vendor
+        working-directory: skills/yarradev-run/scripts/vendor
         run: shasum -a 256 -c core.mjs.sha256

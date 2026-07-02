@@ -1,5 +1,5 @@
 /*
- * yarradev-board — PLUGIN-SIDE config + token I/O (plain Node, zero deps).
+ * yarradev — PLUGIN-SIDE config + token I/O (plain Node, zero deps).
  *
  * These helpers are plugin-only: they load/merge the local board config and resolve the board bearer
  * from env. They are NOT board protocol — the board protocol (BoardClient, decide, reduce, parseVerdict)
@@ -10,7 +10,7 @@
  * Auth: the board bearer comes from env only (never config, never argv) — per ACTING ROLE via
  *       YDB_TOKEN_<ROLE> (e.g. YDB_TOKEN_DEVELOPER) for a per-role board identity, else the shared
  *       YDB_TOKEN. See resolveToken(). Tokens NEVER reach a subagent — the orchestrator posts every act.
- * Config: skills/yarradev-board-run/config/board.json (gitignored) overrides board.example.json;
+ * Config: skills/yarradev-run/config/board.json (gitignored) overrides board.example.json;
  *         YDB_API_BASE / YDB_DO_NAME env vars override either.
  */
 import { readFileSync } from "node:fs";

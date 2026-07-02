@@ -7,7 +7,7 @@
 **Architecture:** Add a zero-dep `config-trust.mjs` next to `lib.mjs`. It exposes (1) `validateCommandString` — pins a deploy command to an allowlisted shape (plain `argv0 args…`, no shell metacharacters that enable chaining/substitution/redirection); (2) `assertSafeCommandFields(cfg)` — fail-closed validation of every command-producing field, wired into `loadConfig()` so a malformed/injected command throws at load, before any releaser runs it; (3) `mergePlatformConfig(localCfg, platformCfg)` — the S3 source-trust boundary: merges platform **policy** fields but drops platform **command** fields (deploy.* is local-only), tagging provenance. The runner already uses config values only as data / child-process argv — never `eval`/`Function`; we add a test asserting no dynamic-eval of config and document the invariant.
 
 **Context (verified in repo):**
-- Runner config: `skills/yarradev-board-run/scripts/lib.mjs` → `loadConfig()` merges `config/board.example.json` (template) + `config/board.json` (gitignored overlay) + `YDB_*` env. Returns `{apiBase, doName, lifecycle, deploy, pace, budgets}`.
+- Runner config: `skills/yarradev-run/scripts/lib.mjs` → `loadConfig()` merges `config/board.example.json` (template) + `config/board.json` (gitignored overlay) + `YDB_*` env. Returns `{apiBase, doName, lifecycle, deploy, pace, budgets}`.
 - The command path: `cfg.deploy.staging` (a string, e.g. `wrangler deploy --env staging`) is passed by the orchestrator to the **releaser** subagent (`SKILL.md` ~L98: `{ deployCmd: cfg.deploy?.staging }`), which **runs it** (`SKILL.md` L33-34; `agents/releaser.md` L22-33). `deploy.prod` is the same shape for the prod stage. Empty string = "not configured" → releaser escalates (must stay valid).
 - Tests: `npm test` = `node --test "test/*.test.mjs"`, using `node:test` + `node:assert/strict`. Zero external deps. Offline-green by default.
 - No `eval`/`new Function`/`child_process` in the `.mjs` scripts today (agents exec via their own Bash tool); the invariant to preserve is "config strings are data/argv, never eval'd".
@@ -22,7 +22,7 @@
 
 ### Task 1: `config-trust.mjs` — validate + source-trust (TDD)
 
-**Files:** Create `skills/yarradev-board-run/scripts/config-trust.mjs`; Test `test/config-trust.test.mjs`.
+**Files:** Create `skills/yarradev-run/scripts/config-trust.mjs`; Test `test/config-trust.test.mjs`.
 
 **Interfaces (exported):**
 - `COMMAND_FIELD_PATHS: string[]` = `["deploy.staging", "deploy.prod"]` (dot-paths into cfg that become shell commands).
@@ -41,7 +41,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   validateCommandString, assertSafeCommandFields, mergePlatformConfig, COMMAND_FIELD_PATHS,
-} from "../skills/yarradev-board-run/scripts/config-trust.mjs";
+} from "../skills/yarradev-run/scripts/config-trust.mjs";
 
 test("validateCommandString accepts plain deploy commands + empty sentinel", () => {
   for (const s of ["", "wrangler deploy --env staging", "npm run deploy:staging",
@@ -90,7 +90,7 @@ test("COMMAND_FIELD_PATHS covers deploy.staging + deploy.prod", () => {
 
 ### Task 2: Wire fail-closed validation into `loadConfig()` (TDD)
 
-**Files:** Modify `skills/yarradev-board-run/scripts/lib.mjs` (`loadConfig`); Test `test/config-trust.test.mjs` (add a loadConfig integration case using a temp config dir, or assert via a small exported seam).
+**Files:** Modify `skills/yarradev-run/scripts/lib.mjs` (`loadConfig`); Test `test/config-trust.test.mjs` (add a loadConfig integration case using a temp config dir, or assert via a small exported seam).
 
 **Interfaces:** `loadConfig()` calls `assertSafeCommandFields(cfg)` immediately before `return cfg`. A malformed/injected `deploy.*` in `board.json` now throws at load — before any releaser is dispatched.
 
@@ -103,7 +103,7 @@ test("COMMAND_FIELD_PATHS covers deploy.staging + deploy.prod", () => {
 ---
 
 ### Task 3: Document the boundary (SKILL.md) + invariant test
-**Files:** Modify `skills/yarradev-board-run/SKILL.md` (the config/deploy section ~L30-34); Test `test/config-trust.test.mjs` (eval-invariant guard).
+**Files:** Modify `skills/yarradev-run/SKILL.md` (the config/deploy section ~L30-34); Test `test/config-trust.test.mjs` (eval-invariant guard).
 - [ ] **Step 1:** In SKILL.md where `deploy.staging` is described, add one line: deploy commands are **validated as untrusted** (single plain invocation; no shell chaining/substitution/redirection — put compound deploys in a committed script); platform-pushed config never supplies command fields (§14 S3). No code in this step.
 - [ ] **Step 2 (eval-invariant guard test):** add a test that reads `config-trust.mjs` + `lib.mjs` source and asserts they contain no `eval(`/`new Function(` (string-source scan via `readFileSync`) — locks in "config strings are never eval'd". Run → it passes (no eval present); if someone later adds eval, it fails.
 - [ ] **Step 3: Commit** (`docs(runner): document untrusted-config deploy boundary + eval-invariant guard (#19 S3)` + trailer).
