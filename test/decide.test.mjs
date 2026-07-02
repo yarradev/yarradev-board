@@ -171,7 +171,10 @@ const EXAMPLE = JSON.parse(
 
 test("decide (shipped board.example.json): full backlog→spec→dev→test→done→staging→prod lifecycle routes correctly", () => {
   const lc = EXAMPLE.lifecycle;
-  assert.deepEqual(Object.keys(lc), ["backlog", "spec", "dev", "test", "done", "staging", "prod"]); // shape is pinned
+  assert.deepEqual(Object.keys(lc), [
+    "backlog", "spec", "dev", "test", "done", "staging", "prod",
+    "epic_analysis", "epic_decompose", "epic_integrating", "epic_done",
+  ]); // shape is pinned (7 base + 4 epic-tier, Phase 2b Task 8)
   const c = (o) => enriched({ id: "x", blocked: false, lease_expiry_ts: null, current_gen: 1, ...o });
   // backlog: judgement intake stage (owner designer, to spec) → work the designer to spec
   assert.deepEqual(decide(c({ state: "backlog" }), lc, POLICY, 1000), { kind: "work", role: "designer", to: "spec" });

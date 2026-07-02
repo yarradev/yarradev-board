@@ -2,7 +2,8 @@
  * assertLifecycleCoherent (Task 8 — single-source the lifecycle) — vendored from orchestrator-core
  * (skills/yarradev-board-run/scripts/vendor/core.mjs). Confirms the SHIPPED board.example.json
  * lifecycle is coherent with a representative BoardMachine (as GET /config would return for a live
- * board running that same 7-state lifecycle), and pins the fail-closed diff behavior list-ready.mjs
+ * board running that same 11-state lifecycle, 7 base + 4 epic-tier as of Phase 2b Task 8), and pins
+ * the fail-closed diff behavior list-ready.mjs
  * relies on to refuse routing on incoherence.
  *
  * A live check against acme:main needs a bearer token and is NOT run here — see the Task 8 report's
@@ -27,9 +28,12 @@ function machineFor(lifecycle) {
   return { initial: states[0] ?? null, states, terminal: states.filter((s) => lifecycle[s].to == null), transitions };
 }
 
-test("assertLifecycleCoherent: the shipped board.example.json 7-state lifecycle is coherent with a matching machine", () => {
+test("assertLifecycleCoherent: the shipped board.example.json 11-state lifecycle is coherent with a matching machine", () => {
   const lc = EXAMPLE.lifecycle;
-  assert.deepEqual(Object.keys(lc), ["backlog", "spec", "dev", "test", "done", "staging", "prod"]); // shape is pinned
+  assert.deepEqual(Object.keys(lc), [
+    "backlog", "spec", "dev", "test", "done", "staging", "prod",
+    "epic_analysis", "epic_decompose", "epic_integrating", "epic_done",
+  ]); // shape is pinned (7 base + 4 epic-tier, Phase 2b Task 8)
   assert.doesNotThrow(() => assertLifecycleCoherent(lc, machineFor(lc)));
 });
 
