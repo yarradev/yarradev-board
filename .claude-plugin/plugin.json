@@ -1,10 +1,10 @@
 {
   "name": "yarradev",
-  "version": "0.3.0",
+  "version": "0.6.0",
   "description": "yarradev board orchestrator: a reconciliation-loop skill that drives a yarradev HTTP board (Cloudflare Durable Object) and dispatches role subagents (designer/developer/tester/security-advisor/releaser) through a gated lifecycle (spec→dev→test→done→staging→prod) via the Agent tool — running on your own Claude subscription.",
   "author": { "name": "Yarra Systems" },
-  "homepage": "https://github.com/yarradev/public-claude-plugins/tree/main/yarradev",
-  "repository": "https://github.com/yarradev/public-claude-plugins",
+  "homepage": "https://github.com/yarradev/yarradev-board",
+  "repository": "https://github.com/yarradev/yarradev-board",
   "license": "MIT",
   "keywords": ["sdlc", "orchestration", "agents", "reconciliation-loop", "yarradev"]
 }
