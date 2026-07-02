@@ -92,8 +92,6 @@ function decide(card, lifecycle, _policy, nowMs) {
   const transitions = card.transitions_count ?? 0;
   if (transitions >= DEFAULT_BUDGETS.transition_budget)
     return { kind: "escalate", reason: `transition-budget (${transitions}/${DEFAULT_BUDGETS.transition_budget})` };
-  if (card.veto_held && card.vetoes.length === 0)
-    return { kind: "escalate", reason: "board-drift: veto_held with no open veto" };
   if (card.blocked && card.open_questions.length === 0)
     return { kind: "escalate", reason: "board-drift: blocked with no open question (would park forever)" };
   if (card.blocked) {

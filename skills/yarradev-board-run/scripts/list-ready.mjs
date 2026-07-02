@@ -30,12 +30,15 @@ const policy = { advisors: cfg.policy?.advisors ?? [] };
 const client = makeClient({ role: "orchestrator" });
 const now = Date.now();
 
-const machine = await client.getMachine();
-if (!machine) {
-  process.stderr.write("list-ready: refusing to route — GET /config returned no machine (board unreachable or no active config)\n");
-  process.exit(1);
-}
+// Fail closed on ANY machine-fetch/coherence problem: getMachine() returns null on an HTTP error
+// (non-2xx → no active config / 5xx), but a transport failure (DNS, connection refused, TLS) makes
+// fetch REJECT — catch that too so it produces the same clean refuse-to-route line, not a raw stack trace.
 try {
+  const machine = await client.getMachine();
+  if (!machine) {
+    process.stderr.write("list-ready: refusing to route — GET /config returned no machine (board unreachable or no active config)\n");
+    process.exit(1);
+  }
   assertLifecycleCoherent(cfg.lifecycle, machine);
 } catch (e) {
   process.stderr.write(`list-ready: refusing to route — ${e.message}\n`);
