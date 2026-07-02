@@ -97,6 +97,12 @@ function assertLifecycleCoherent(lifecycle, machine) {
 
 // src/decide.ts
 var leased = (card, nowMs) => card.lease_expiry_ts != null && card.lease_expiry_ts > nowMs;
+var promote = (st, reason) => ({
+  kind: "promote",
+  to: st.to ?? void 0,
+  ...st.promoteAs ? { role: st.promoteAs } : {},
+  ...reason ? { reason } : {}
+});
 function decide(card, lifecycle, _policy, nowMs) {
   const st = lifecycle[card.state];
   if (!st) return { kind: "escalate", reason: `unknown-stage: ${card.state}` };
@@ -118,10 +124,10 @@ function decide(card, lifecycle, _policy, nowMs) {
     if (card.children_total === 0)
       return { kind: "escalate", reason: "fan-in barrier with 0 child stories (decompose produced none?)" };
     if (card.children_done >= card.children_total)
-      return { kind: "advance", to: st.to, reason: `fan-in: all ${card.children_total} children done` };
+      return promote(st, `fan-in: all ${card.children_total} children done`);
     return { kind: "noop", reason: `fan-in ${card.children_done}/${card.children_total}` };
   }
-  if (st.gate === "human") return { kind: "promote", to: st.to };
+  if (st.gate === "human") return promote(st);
   if (st.gate === "mechanical" && card.linked_head_sha != null) {
     const ci = card.ci_rollup || "absent";
     if (ci === "success") {

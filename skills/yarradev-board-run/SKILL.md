@@ -36,13 +36,22 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
   (e.g. `wrangler deploy --env staging`); empty → the releaser escalates asking you to configure it.
   Deploy commands are **validated as untrusted** at config load — a single plain invocation only; no shell chaining, substitution, or redirection (put compound deploys in a committed script). Platform-pushed config never supplies command fields (§14 S3).
 - **Lifecycle `gate` tags are plugin-side routing hints — not the enforcer.** A stage's `gate` only tells
-  `decide()` how to route (`mechanical` → CI advance/respawn; `human` → promote; default → dispatch the
-  owner for a judgement verdict). The board's REAL enforcement is the compiled `GateExpr` on each
-  transition edge, and the two MUST agree: a `gate:"mechanical"` stage that also has an advisor needs its
-  forward edge to declare `{all:[{p:"ci_green"},{p:"no_open_veto"},{p:"no_open_hold"}]}`; a `gate:"human"`
-  stage needs `{p:"human_go"}`. If the board edge omits the gate, the act commits with **no** enforcement
+  `decide()` how to route (`mechanical` → CI advance/respawn; `human` → promote; `barrier` → promote once
+  all children are done; default → dispatch the owner for a judgement verdict). The board's REAL
+  enforcement is the compiled `GateExpr` on each transition edge, and the two MUST agree: a
+  `gate:"mechanical"` stage that also has an advisor needs its forward edge to declare
+  `{all:[{p:"ci_green"},{p:"no_open_veto"},{p:"no_open_hold"}]}`; a `gate:"human"` stage needs
+  `{p:"human_go"}`. If the board edge omits the gate, the act commits with **no** enforcement
   (e.g. a promote with no human GO — an authority bypass); if the edge is missing entirely, the MOVE 422s
   with no `blocked_by` and the advance/promote silently never fires.
+- **`gate:"barrier"` is an epic fan-in — routed as a promote, NOT a CLAIMing advance.** An epic's
+  `integrating` stage stays parked until every child story is terminal, then `decide()` emits
+  `{kind:"promote", to, role}` (role = the stage's `promoteAs`, e.g. `analyst`). It is promote-shaped
+  because the barrier stage has `owner:""` — a CLAIMing advance would CLAIM with an empty role and
+  `claim.mjs` would exit 2, stalling a completed epic every pass. The board's `all_children_terminal`
+  gate on the `integrating→done` edge is the real enforcer (a promote posted while a child is still
+  non-terminal 422s with `blocked_by ⊇ all_children_terminal`). Both promote flavors — human gate and
+  barrier — go through the single `promote` branch below; they differ only in the `role` the line carries.
 - **Board bearer token(s) — pass INLINE, never export, never to a subagent.** A token (shaped
   `<token_id>.<secret>`) authenticates you to the board; it is **not** a Claude credential. Pass it inline
   on **every** script call so it lives only in that one process. Do **NOT** `export` it, write it to a
@@ -67,7 +76,8 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
    `{ "kind":"work"|"advance"|"respawn"|"reclaim"|"promote"|"escalate", "id", "state", "role"?, "to"?, "reason"?, "title" }`.
    `work` carries role+to; `advance` carries role+to; `respawn` carries role; `reclaim` carries role+to
    (a prior lease expired — take it over and re-dispatch the owner, exactly like `work`); `promote` carries
-   to (a human-gated stage); `escalate` carries reason (a budget is exhausted / CI stalled — park for a human).
+   to (a promote-shaped gate — human `staging→prod`, or an epic fan-in `barrier` which ALSO carries `role`);
+   `escalate` carries reason (a budget is exhausted / CI stalled — park for a human).
    Waiting cards (terminal/blocked/leased/ci-pending/ci-absent/…) are logged to stderr and skipped.
 2. **For each actionable card, sequentially, up to `pace.maxCardsPerPass` (default 1), branch on `kind`:**
 
@@ -82,15 +92,27 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-board-run/scripts`.
       advanced. **422 `gate_blocked`** (CI flipped since the list) → log, fall through to CLEAR; next pass re-derives.
    3. `node $S/clear-lease.mjs <id> <gen>` — always.
 
-   **`promote`** — a human-gated stage (the `staging→prod` production gate); advance ONLY on an accountable
-   human's GO. **No CLAIM** (the GO is gen-stamped — a CLAIM would invalidate it), no dispatch:
-   1. `node $S/promote.mjs <id> <to>` — MOVEs at the card's current gen.
-   2. `committed` → released to `<to>`. **422 with `blocked_by` ⊇ `human_go`** → log "awaiting human GO"
-      and wait. A human (a `byKind:human` identity) runs `node $S/human-go.mjs <id>` to approve; the next
-      pass's promote then commits. **Agents cannot self-approve a release.**
-      ⚠️ The card must already read state `staging` before the human posts `HUMAN_GO`: the GO is gen-stamped,
-      and the prior `done→staging` deploy CLAIM bumps the gen — a GO posted while the card is still in `done`
-      is invalidated by that bump.
+   **`promote`** — a promote-shaped gate: MOVE at the card's CURRENT gen (**no CLAIM** — a CLAIM bump would
+   invalidate the gen-stamped GO / the barrier's child-completion facts), **no dispatch**. Two flavors,
+   discriminated by the line's `role` (from `list-ready`, which forwards `a.role` when `decide` set it):
+   the **human gate** (`staging→prod`) carries **no role** → releaser default; the **epic fan-in barrier**
+   (`integrating→done`) carries `role` = the stage's `promoteAs` (e.g. `analyst`). Don't hardcode the
+   role or the state names — pass through what the line gives you:
+   1. `node $S/promote.mjs <id> <to> [role]` — forward the line's `role` when present (omit it → promote.mjs
+      defaults to `releaser`). MOVEs at the card's current gen.
+   2. `committed` → promoted to `<to>`. On **422**, branch on `blocked_by` (do NOT hardcode state names —
+      read the failing predicate):
+      - **`blocked_by ⊇ human_go`** (human gate) → log "awaiting human GO" and wait. A human (a
+        `byKind:human` identity) runs `node $S/human-go.mjs <id>` to approve; the next pass's promote then
+        commits. **Agents cannot self-approve a release.**
+        ⚠️ The card must already read state `staging` before the human posts `HUMAN_GO`: the GO is
+        gen-stamped, and the prior `done→staging` deploy CLAIM bumps the gen — a GO posted while the card is
+        still in `done` is invalidated by that bump.
+      - **`blocked_by ⊇ all_children_terminal`** (epic barrier) → a child regressed out of terminal AFTER
+        `decide` derived the promote (the list is a snapshot). This is NOT a human-GO wait: just **log it
+        and fall through** — the next pass re-derives (it re-reads child completion and either re-parks the
+        barrier `noop fan-in n/total` or re-promotes once the child is terminal again). No human action.
+      - any other `blocked_by` → log and let the next pass re-derive (same as `advance`'s 422 path).
 
    **`work`**, **`respawn`**, or **`reclaim`** — dispatch the stage owner (`reclaim` = a prior lease
    expired; handle it identically to `work`):
