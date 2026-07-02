@@ -12,8 +12,14 @@
  * card, lifecycle, policy, nowMs — budgets are sourced internally). decide() reads EnrichedItem fields
  * (open_questions/vetoes/next_transitions), so each card is fetched via getEnriched(), not the thin
  * list projection.
+ *
+ * Task 8 — single-source the lifecycle: before routing anything, fetch the live board's GET /config
+ * machine and assert it agrees with this plugin's board.json lifecycle (assertLifecycleCoherent).
+ * FAIL CLOSED: a null machine (board unreachable / no active config) or a coherence mismatch both
+ * abort the pass with a non-zero exit rather than routing cards against a lifecycle that may no
+ * longer match what the board actually enforces.
  */
-import { decide } from "./vendor/core.mjs";
+import { decide, assertLifecycleCoherent } from "./vendor/core.mjs";
 import { makeClient, loadConfig } from "./plugin-io.mjs";
 
 const cfg = loadConfig();
@@ -23,6 +29,18 @@ const cfg = loadConfig();
 const policy = { advisors: cfg.policy?.advisors ?? [] };
 const client = makeClient({ role: "orchestrator" });
 const now = Date.now();
+
+const machine = await client.getMachine();
+if (!machine) {
+  process.stderr.write("list-ready: refusing to route — GET /config returned no machine (board unreachable or no active config)\n");
+  process.exit(1);
+}
+try {
+  assertLifecycleCoherent(cfg.lifecycle, machine);
+} catch (e) {
+  process.stderr.write(`list-ready: refusing to route — ${e.message}\n`);
+  process.exit(1);
+}
 
 // GET /cards returns { items, nextAfterId }; the vendored core types listCards() as ItemSnapshot[] and
 // returns the body verbatim, so accept either shape (array now, or a fixed array-returning core later).

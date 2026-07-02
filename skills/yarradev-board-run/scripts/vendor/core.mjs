@@ -58,6 +58,30 @@ var DEFAULT_BUDGETS = {
 var stageOf = (lifecycle, state) => lifecycle[state];
 var isTerminal = (st) => st != null && st.to == null;
 var advisorRoleFor = (st) => st?.advisors?.[0]?.role;
+function assertLifecycleCoherent(lifecycle, machine) {
+  const lifecycleStates = new Set(Object.keys(lifecycle));
+  const machineStates = new Set(machine.states);
+  const lifecycleOnly = [...lifecycleStates].filter((s) => !machineStates.has(s)).sort();
+  const machineOnly = [...machineStates].filter((s) => !lifecycleStates.has(s)).sort();
+  const problems = [];
+  if (lifecycleOnly.length > 0 || machineOnly.length > 0) {
+    problems.push(
+      `state mismatch: in lifecycle but not machine [${lifecycleOnly.join(", ")}]; in machine but not lifecycle [${machineOnly.join(", ")}]`
+    );
+  }
+  const missingEdges = [];
+  for (const [state, def] of Object.entries(lifecycle)) {
+    if (def.to == null) continue;
+    const hasEdge = machine.transitions.some((t) => t.from === state && t.to === def.to);
+    if (!hasEdge) missingEdges.push(`${state}->${def.to}`);
+  }
+  if (missingEdges.length > 0) {
+    problems.push(`missing edge(s) in machine.transitions: [${missingEdges.join(", ")}]`);
+  }
+  if (problems.length > 0) {
+    throw new Error(`assertLifecycleCoherent: lifecycle disagrees with GET /config machine \u2014 ${problems.join("; ")}`);
+  }
+}
 
 // src/decide.ts
 var leased = (card, nowMs) => card.lease_expiry_ts != null && card.lease_expiry_ts > nowMs;
@@ -323,6 +347,7 @@ export {
   BoardClient,
   DEFAULT_BUDGETS,
   advisorRoleFor,
+  assertLifecycleCoherent,
   decide,
   isTerminal,
   parseVerdict,
