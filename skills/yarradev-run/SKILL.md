@@ -60,16 +60,18 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
   acts under that identity.
 - **Per-role identities (least privilege).** Each act is posted under the **role that produced it**, via a
   per-role token: the scripts read `YDB_TOKEN_<ROLE>` (upper-case, `-`→`_`: `YDB_TOKEN_DEVELOPER`,
-  `YDB_TOKEN_SECURITY_ADVISOR`, `YDB_TOKEN_ORCHESTRATOR`, `YDB_TOKEN_DESIGNER`, `YDB_TOKEN_TESTER`,
-  `YDB_TOKEN_RELEASER`, `YDB_TOKEN_ANALYST`, `YDB_TOKEN_HUMAN`), **falling back to the shared `YDB_TOKEN`**
-  if a role's token isn't set (the fallback is logged to stderr). You hold **all** the role tokens and the
-  scripts select the right one per act; **subagents still never see any token**. Mapping:
-  `claim`/`clear-lease`/`escalate` → orchestrator · `move`/`reject` → the **stage owner** (passed as the
-  last arg) · `link-pr`/`push` → developer · `veto`/`hold`/`advice` → security-advisor · `promote` →
-  releaser (or the barrier's `promoteAs` role, e.g. analyst) · `create` (epic decomposition) → analyst ·
-  `create`/`note` (Task A7 bug-spawn — `advice.spawn[]` → `bug-<fingerprint>` card + repro note) →
-  **orchestrator** (role-agnostic primitive; not attributed to the reviewing advisor) ·
-  `human-go`/`clear-veto` → human.
+  `YDB_TOKEN_SECURITY_ADVISOR`, `YDB_TOKEN_CODE_REVIEWER`, `YDB_TOKEN_ORCHESTRATOR`, `YDB_TOKEN_DESIGNER`,
+  `YDB_TOKEN_TESTER`, `YDB_TOKEN_RELEASER`, `YDB_TOKEN_ANALYST`, `YDB_TOKEN_HUMAN`), **falling back to the
+  shared `YDB_TOKEN`** if a role's token isn't set (the fallback is logged to stderr). You hold **all** the
+  role tokens and the scripts select the right one per act; **subagents still never see any token**.
+  Mapping: `claim`/`clear-lease`/`escalate` → orchestrator · `move`/`reject` → the **stage owner** (passed
+  as the last arg) · `link-pr`/`push` → developer · `veto`/`hold` → security-advisor (the only advisor with
+  veto/hold authority) · `advice` → **the dispatched advisor's role for this stage** (passed via `--role`,
+  e.g. security-advisor or code-reviewer — NOT hardcoded, since any configured advisor may post a
+  clean/advice review) · `promote` → releaser (or the barrier's `promoteAs` role, e.g. analyst) ·
+  `create` (epic decomposition) → analyst · `create`/`note` (Task A7 bug-spawn — `advice.spawn[]` →
+  `bug-<fingerprint>` card + repro note) → **orchestrator** (role-agnostic primitive; not attributed to the
+  reviewing advisor) · `human-go`/`clear-veto` → human.
   Inline the whole set at loop start, e.g. `YDB_TOKEN_ORCHESTRATOR=… YDB_TOKEN_DEVELOPER=… … node $S/…`
   (or just `YDB_TOKEN=…` for a single-identity setup — everything falls back to it).
 
@@ -169,10 +171,16 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
         item (this pass's `role` is the advisor), and (ii) the inline post-submit review below. The advisor
         returns `{status, head, reason?}` (`reason` accompanies veto/hold/advice; the `clean` verdict omits
         it). Post — **never "log only"** — keyed on `status`:
-        - `advice`/`clean` → `node $S/advice.mjs <id> <head> "<reason>"` — records a CLEAN review at `<head>`
-          so `advisor_clear` goes non-vacuous and the card advances next pass. **Skipping this is the
-          clean-card livelock**: no `advisor_state` row → `advisor_clear` false forever → `decide`
-          re-dispatches the advisor every tick.
+        - `advice`/`clean` → `node $S/advice.mjs <id> <head> "<reason>" --role <role>` — records a CLEAN
+          review at `<head>`, posted under **this pass's dispatched advisor role** (`<role>`, e.g.
+          `security-advisor` or `code-reviewer`) so the ADVICE is attributed to the advisor that actually
+          reviewed it, not silently misattributed to security-advisor's identity when a different advisor
+          is configured for this stage. `advice.mjs` defaults `--role` to `security-advisor` when the flag
+          is omitted (preserves single-advisor behavior), but you **must** pass `--role <role>` explicitly
+          here, matching `create.mjs`'s `--role` convention. Recording this so `advisor_clear` goes
+          non-vacuous and the card advances next pass. **Skipping this is the clean-card livelock**: no
+          `advisor_state` row → `advisor_clear` false forever → `decide` re-dispatches the advisor every
+          tick.
           - **Sub-clause of the above — `advice` ALSO carrying `spawn[]`** (Task A7/A8 — reviewer-raised
             bugs, e.g. `code-reviewer`'s verdict `{status:"advice", head, reason?, spawn:[{title, file,
             summary, note?}]}`). **⚠️ Spawn entries are RAW — `{title, file, summary, note?}` — NOT
