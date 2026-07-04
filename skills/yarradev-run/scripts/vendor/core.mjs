@@ -2,6 +2,18 @@
 
 // src/verdict.ts
 var STATUSES = /* @__PURE__ */ new Set(["advance", "reject", "submitted", "question", "error", "veto", "hold", "advice", "clean"]);
+function parseSpawn(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const e of raw) {
+    if (e == null || typeof e !== "object") continue;
+    const { title, fingerprint, note } = e;
+    if (typeof title !== "string" || !title.trim()) continue;
+    if (typeof fingerprint !== "string" || !fingerprint.trim()) continue;
+    out.push({ title, fingerprint, ...typeof note === "string" ? { note } : {} });
+  }
+  return out;
+}
 function extractJsonBlock(text) {
   const re = /```json\s*([\s\S]*?)```/gi;
   let m;
@@ -41,10 +53,14 @@ function parseVerdict(text) {
       return { status, ...reason };
     case "veto":
     case "hold":
-    case "advice":
     case "clean":
       if (typeof o.role !== "string" || typeof o.head !== "string") return err(`${status} verdict missing role/head`);
       return { status, role: o.role, head: o.head, ...reason };
+    case "advice": {
+      if (typeof o.role !== "string" || typeof o.head !== "string") return err(`${status} verdict missing role/head`);
+      const spawn = parseSpawn(o.spawn);
+      return { status, role: o.role, head: o.head, ...reason, ...spawn.length ? { spawn } : {} };
+    }
     default:
       return err("unreachable");
   }
@@ -153,10 +169,28 @@ function decide(card, lifecycle, _policy, nowMs) {
   return { kind: "work", role: st.owner, to: st.to };
 }
 
+// src/fingerprint.ts
+function normalizeSummary(s) {
+  return s.toLowerCase().replace(/\s+/g, " ").trim().replace(/[.\s]+$/, "");
+}
+async function sha256hex(s) {
+  const bytes = new TextEncoder().encode(s);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function bugFingerprint(repo, file, summary) {
+  const hex = await sha256hex(`${repo}\0${file}\0${normalizeSummary(summary)}`);
+  return hex.slice(0, 16);
+}
+function bugCardId(fp) {
+  return "bug-" + fp;
+}
+
 // src/reduce.ts
 var escalate = (card, reason) => [
   { type: "ESCALATE", item_id: card.id, data: { reason } }
 ];
+var MAX_SPAWN = 20;
 function reduce(verdict, card, lifecycle) {
   const st = lifecycle[card.state];
   switch (verdict.status) {
@@ -187,8 +221,27 @@ function reduce(verdict, card, lifecycle) {
     case "hold":
       return [{ type: "HOLD", item_id: card.id, data: { role: verdict.role, head: verdict.head, reason: verdict.reason ?? "" } }];
     case "advice":
-    case "clean":
-      return [{ type: "ADVICE", item_id: card.id, data: { reviewed_head: verdict.head, reason: verdict.reason ?? "" } }];
+    case "clean": {
+      const advice = {
+        type: "ADVICE",
+        item_id: card.id,
+        data: { reviewed_head: verdict.head, reason: verdict.reason ?? "" }
+      };
+      const spawn = verdict.status === "advice" ? verdict.spawn ?? [] : [];
+      if (spawn.length === 0) return [advice];
+      const kept = spawn.slice(0, MAX_SPAWN);
+      const dropped = spawn.length - kept.length;
+      const acts = [advice];
+      for (const bug of kept) {
+        const id = bugCardId(bug.fingerprint);
+        acts.push({ type: "CREATE", item_id: id, data: { type: "bug", title: bug.title, state: "dev", parent_id: card.id } });
+        if (bug.note) acts.push({ type: "NOTE", item_id: id, data: { text: bug.note } });
+      }
+      if (dropped > 0) {
+        acts.push({ type: "NOTE", item_id: card.id, data: { text: `${dropped} spawn entries dropped (cap ${MAX_SPAWN})` } });
+      }
+      return acts;
+    }
     case "decomposed": {
       if (!st?.to) return escalate(card, `decomposed from ${card.state} but it has no forward edge`);
       if (verdict.to !== st.to) {
@@ -396,8 +449,11 @@ export {
   DEFAULT_BUDGETS,
   advisorRoleFor,
   assertLifecycleCoherent,
+  bugCardId,
+  bugFingerprint,
   decide,
   isTerminal,
+  normalizeSummary,
   parseVerdict,
   reduce,
   stageOf,
