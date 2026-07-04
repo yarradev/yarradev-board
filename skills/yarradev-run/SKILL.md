@@ -100,6 +100,24 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
    the **human gate** (`staging→prod`) carries **no role** → releaser default; the **epic fan-in barrier**
    (`integrating→done`) carries `role` = the stage's `promoteAs` (e.g. `analyst`). Don't hardcode the
    role or the state names — pass through what the line gives you:
+   0. **Autonomous release (human gate ONLY — the no-`role` `staging→prod` flavor).** If the board's
+      compiled machine (from `GET /config`, already read for the coherence gate) contains a
+      `type:"RELEASE"` transition **and** the loop token carries the `board:release` grant (autonomous
+      release is enabled for this board), attempt `node $S/release.mjs <id>` **FIRST** (posts a RELEASE at
+      the card's current gen — read the target state from the RELEASE edge's `to`, do NOT hardcode `prod`):
+      - **`committed`** → the card is now in the RELEASE target (prod). Do the prod rollout:
+        run `cfg.deploy?.prod` then `cfg.smoke?.prod`, then fold the smoke via
+        `node $S/smoke.mjs <id> <releaseTo> <state>`. **Empty `deploy.prod`/`smoke.prod` → escalate to a
+        human (`node $S/escalate.mjs`); NEVER silently pass.** On **prod-smoke red** apply
+        `cfg.release?.on_smoke_fail` (default `halt`): `halt` → `escalate.mjs` + **stop** the loop for this
+        card; `park` → escalate + leave it; `rollback` → run `cfg.rollback?.prod` then `escalate.mjs`.
+        Then skip the human-gate steps below (the promote is done).
+      - **403 (`outcome:"unauthorized"` — the token lacks `board:release`)** or **422
+        (`blocked_by ⊇ auto_release` — the floor isn't green)** → **FALL BACK** to the existing human-GO
+        wait below (log "awaiting human GO", unchanged). This is the fail-closed default: a denied or
+        blocked autonomous release NEVER promotes; production stays human-gated.
+      - When the machine has **NO `type:"RELEASE"` edge** (autonomy off) → **skip `release.mjs` entirely**;
+        behavior is exactly today's human-GO gate (steps 1–2 below).
    1. `node $S/promote.mjs <id> <to> [role]` — forward the line's `role` when present (omit it → promote.mjs
       defaults to `releaser`). MOVEs at the card's current gen.
    2. `committed` → promoted to `<to>`. On **422**, branch on `blocked_by` (do NOT hardcode state names —
@@ -127,7 +145,10 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
       `{ doName, cardId, state, to, role, title }`; for a **mechanical** stage also pass
       `{ mode:"mechanical", respawn: (kind === "respawn") }` (+ the prior failure summary on a respawn,
       best-effort from this pass's log); for the **releaser** (`done→staging` deploy) also pass
-      `{ deployCmd: cfg.deploy?.staging }`; for the **security-advisor** (when `decide` dispatched the
+      `{ deployCmd: cfg.deploy?.staging, smokeCmd: cfg.smoke?.staging }` — after `deploy.staging` succeeds
+      the releaser runs `smoke.staging` (if set) and reports the result; the ORCHESTRATOR then folds it by
+      posting `node $S/smoke.mjs <id> staging <success|red>` so `staging_smoke` goes non-vacuous (the
+      `auto_release` floor reads it). For the **security-advisor** (when `decide` dispatched the
       advisor itself as the primary `work`/`reclaim` item — `role` is the stage's advisor, e.g. CI is green
       but `advisor_clear` is still failing) also pass `{ repo, branch, head, watch_paths }` — the SAME
       advisor context the inline post-submit review passes (source `repo`/`head` from the card's linked PR,
