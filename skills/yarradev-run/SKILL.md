@@ -67,6 +67,8 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
   `claim`/`clear-lease`/`escalate` → orchestrator · `move`/`reject` → the **stage owner** (passed as the
   last arg) · `link-pr`/`push` → developer · `veto`/`hold`/`advice` → security-advisor · `promote` →
   releaser (or the barrier's `promoteAs` role, e.g. analyst) · `create` (epic decomposition) → analyst ·
+  `create`/`note` (Task A7 bug-spawn — `advice.spawn[]` → `bug-<fingerprint>` card + repro note) →
+  **orchestrator** (role-agnostic primitive; not attributed to the reviewing advisor) ·
   `human-go`/`clear-veto` → human.
   Inline the whole set at loop start, e.g. `YDB_TOKEN_ORCHESTRATOR=… YDB_TOKEN_DEVELOPER=… … node $S/…`
   (or just `YDB_TOKEN=…` for a single-identity setup — everything falls back to it).
@@ -170,6 +172,32 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
           so `advisor_clear` goes non-vacuous and the card advances next pass. **Skipping this is the
           clean-card livelock**: no `advisor_state` row → `advisor_clear` false forever → `decide`
           re-dispatches the advisor every tick.
+        - **`advice` carrying `spawn[]`** (Task A7 — reviewer-raised bugs, e.g. `code-reviewer`'s verdict
+          `{status:"advice", head, reason?, spawn:[{title, fingerprint, note?}]}`) — post `advice.mjs`
+          FIRST (the line above, unchanged), **then** for EACH `spawn[i]` in order (cap at 20 entries per
+          verdict, mirroring `reduce()`'s cap — if `spawn.length` exceeds it, process only the first 20
+          and log the drop count; do not escalate):
+          1. **Pre-check (dedup).** Read `bug-<spawn[i].fingerprint>` the SAME way `list-ready.mjs`/
+             `decide()` read any card — `client.getEnriched(id)`, i.e. `GET
+             /boards/<doName>/cards/bug-<fp>/enriched` — a 200 means the bug is already filed (getJson's
+             existing null-on-non-2xx contract: absent ⇒ non-2xx). Concretely:
+             ```
+             curl -s -o /dev/null -w '%{http_code}' \
+               -H "authorization: Bearer $YDB_TOKEN_ORCHESTRATOR" \
+               "$YDB_API_BASE/boards/$YDB_DO_NAME/cards/bug-<fp>/enriched"
+             ```
+             `200` → **SKIP** this entry (already filed — dedup) and move to `spawn[i+1]`. Anything else
+             (404/etc.) → absent, continue to step 2.
+          2. `node $S/create.mjs "<spawn[i].title>" --id bug-<fp> --type bug --state dev --parent <cardId>`
+             — mints the bug card under the ORCHESTRATOR identity (parented to the reviewed card; the
+             board bumps its `children_total`, same as the analyst `decomposed` branch below). A CREATE
+             failure is **not** silently swallowed — log it and stop issuing further spawn entries for
+             this card this pass; the next pass re-dispatches the reviewer (the reviewed card hasn't
+             moved — raising a bug never MOVEs the source card) and it can re-emit the same `spawn[]`; the
+             dedup pre-check makes re-creating already-committed bugs a no-op.
+          3. If `spawn[i].note` is non-empty, `node $S/note.mjs bug-<fp> "<spawn[i].note>"` — attaches the
+             repro body (file:line, failure_scenario, category, source) to the new bug card. Skip this
+             call entirely when `note` is empty/absent — don't post a blank NOTE.
         - `veto` → `node $S/veto.mjs <id> <head> "<reason>"`; `hold` → `node $S/hold.mjs <id> <head> "<reason>"`
           — parks the card (`decide` noops `veto-open`/`hold-open`; the board's `no_open_veto`/`no_open_hold`
           gate blocks dev→test) until an accountable human runs `clear-veto.mjs` (a `clear_authority`
