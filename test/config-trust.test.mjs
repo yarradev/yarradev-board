@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   validateCommandString, assertSafeCommandFields, mergePlatformConfig, COMMAND_FIELD_PATHS,
+  validateReleasePolicy,
 } from "../skills/yarradev-run/scripts/config-trust.mjs";
 import {
   validateLoadedConfig,
@@ -41,7 +42,33 @@ test("mergePlatformConfig drops platform command fields, keeps platform policy +
 });
 
 test("COMMAND_FIELD_PATHS covers deploy.staging + deploy.prod", () => {
-  assert.deepEqual([...COMMAND_FIELD_PATHS].sort(), ["deploy.prod", "deploy.staging"]);
+  assert.ok(COMMAND_FIELD_PATHS.includes("deploy.staging"));
+  assert.ok(COMMAND_FIELD_PATHS.includes("deploy.prod"));
+});
+
+// new command fields are trust-scanned
+test("smoke.* and rollback.prod are command-scanned fields", () => {
+  for (const p of ["smoke.staging", "smoke.prod", "rollback.prod"]) assert.ok(COMMAND_FIELD_PATHS.includes(p));
+});
+
+// release policy enum
+test("validateReleasePolicy accepts halt/rollback/park, rejects others", () => {
+  assert.equal(validateReleasePolicy({ on_smoke_fail: "halt" }).ok, true);
+  assert.equal(validateReleasePolicy({ on_smoke_fail: "rollback" }).ok, true);
+  assert.equal(validateReleasePolicy({ on_smoke_fail: "park" }).ok, true);
+  assert.equal(validateReleasePolicy(null).ok, true);           // absent policy = fine (default halt)
+  assert.equal(validateReleasePolicy({}).ok, true);             // missing on_smoke_fail = default halt = ok
+  assert.equal(validateReleasePolicy({ on_smoke_fail: "yolo" }).ok, false);
+});
+
+// ADVERSARIAL source-trust: a platform config must NOT be able to inject smoke/rollback commands
+test("mergePlatformConfig re-pins smoke/rollback from local, ignoring platform-supplied ones", () => {
+  const local = { deploy: { prod: "deploy.sh" }, smoke: { prod: "smoke.sh" }, rollback: { prod: "rollback.sh" } };
+  const platform = { deploy: { prod: "evil" }, smoke: { prod: "evil-smoke" }, rollback: { prod: "evil-rollback" } };
+  const merged = mergePlatformConfig(local, platform);
+  assert.equal(merged.deploy.prod, "deploy.sh");
+  assert.equal(merged.smoke.prod, "smoke.sh");       // platform's evil-smoke must be dropped
+  assert.equal(merged.rollback.prod, "rollback.sh"); // platform's evil-rollback must be dropped
 });
 
 // Task 2: validateLoadedConfig — exported seam wired into loadConfig()
