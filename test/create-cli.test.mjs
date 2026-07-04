@@ -118,6 +118,50 @@ test("create.mjs --lane wins over --state when both are given", async () => {
   assert.equal(requests[0].body.data.state, "dev");
 });
 
+test("create.mjs --id is honored verbatim (deterministic bug-spawn id, Task A7a)", async () => {
+  const { server, requests } = startStub();
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address();
+
+  const { code, stdout } = await run(
+    ["Off-by-one in loop", "--id", "bug-aaaa1111bbbb2222", "--type", "bug", "--state", "dev", "--parent", "c1"],
+    {
+      YDB_API_BASE: `http://127.0.0.1:${port}`,
+      YDB_DO_NAME: "create-cli-test",
+      YDB_TOKEN: "test.token",
+    },
+  );
+  await new Promise((r) => server.close(r));
+
+  assert.equal(code, 0, `expected exit 0 on committed; stdout=${stdout}`);
+  assert.equal(requests[0].body.item_id, "bug-aaaa1111bbbb2222", "--id must be used verbatim, not overridden by randomUUID()");
+  assert.deepEqual(requests[0].body.data, {
+    type: "bug",
+    title: "Off-by-one in loop",
+    state: "dev",
+    parent_id: "c1",
+  });
+
+  const printed = JSON.parse(stdout.trim());
+  assert.equal(printed.id, "bug-aaaa1111bbbb2222");
+});
+
+test("create.mjs mints its own randomUUID() when --id is omitted", async () => {
+  const { server, requests } = startStub();
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address();
+
+  await run(["No explicit id"], {
+    YDB_API_BASE: `http://127.0.0.1:${port}`,
+    YDB_DO_NAME: "create-cli-test",
+    YDB_TOKEN: "test.token",
+  });
+  await new Promise((r) => server.close(r));
+
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  assert.match(requests[0].body.item_id, UUID_RE, "default id must be a minted UUID");
+});
+
 test("create.mjs exits 2 on missing title (no network call)", async () => {
   const { server, requests } = startStub();
   await new Promise((r) => server.listen(0, "127.0.0.1", r));

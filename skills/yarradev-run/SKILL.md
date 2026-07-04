@@ -60,14 +60,18 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
   acts under that identity.
 - **Per-role identities (least privilege).** Each act is posted under the **role that produced it**, via a
   per-role token: the scripts read `YDB_TOKEN_<ROLE>` (upper-case, `-`→`_`: `YDB_TOKEN_DEVELOPER`,
-  `YDB_TOKEN_SECURITY_ADVISOR`, `YDB_TOKEN_ORCHESTRATOR`, `YDB_TOKEN_DESIGNER`, `YDB_TOKEN_TESTER`,
-  `YDB_TOKEN_RELEASER`, `YDB_TOKEN_ANALYST`, `YDB_TOKEN_HUMAN`), **falling back to the shared `YDB_TOKEN`**
-  if a role's token isn't set (the fallback is logged to stderr). You hold **all** the role tokens and the
-  scripts select the right one per act; **subagents still never see any token**. Mapping:
-  `claim`/`clear-lease`/`escalate` → orchestrator · `move`/`reject` → the **stage owner** (passed as the
-  last arg) · `link-pr`/`push` → developer · `veto`/`hold`/`advice` → security-advisor · `promote` →
-  releaser (or the barrier's `promoteAs` role, e.g. analyst) · `create` (epic decomposition) → analyst ·
-  `human-go`/`clear-veto` → human.
+  `YDB_TOKEN_SECURITY_ADVISOR`, `YDB_TOKEN_CODE_REVIEWER`, `YDB_TOKEN_ORCHESTRATOR`, `YDB_TOKEN_DESIGNER`,
+  `YDB_TOKEN_TESTER`, `YDB_TOKEN_RELEASER`, `YDB_TOKEN_ANALYST`, `YDB_TOKEN_HUMAN`), **falling back to the
+  shared `YDB_TOKEN`** if a role's token isn't set (the fallback is logged to stderr). You hold **all** the
+  role tokens and the scripts select the right one per act; **subagents still never see any token**.
+  Mapping: `claim`/`clear-lease`/`escalate` → orchestrator · `move`/`reject` → the **stage owner** (passed
+  as the last arg) · `link-pr`/`push` → developer · `veto`/`hold` → security-advisor (the only advisor with
+  veto/hold authority) · `advice` → **the dispatched advisor's role for this stage** (passed via `--role`,
+  e.g. security-advisor or code-reviewer — NOT hardcoded, since any configured advisor may post a
+  clean/advice review) · `promote` → releaser (or the barrier's `promoteAs` role, e.g. analyst) ·
+  `create` (epic decomposition) → analyst · `create`/`note` (Task A7 bug-spawn — `advice.spawn[]` →
+  `bug-<fingerprint>` card + repro note) → **orchestrator** (role-agnostic primitive; not attributed to the
+  reviewing advisor) · `human-go`/`clear-veto` → human.
   Inline the whole set at loop start, e.g. `YDB_TOKEN_ORCHESTRATOR=… YDB_TOKEN_DEVELOPER=… … node $S/…`
   (or just `YDB_TOKEN=…` for a single-identity setup — everything falls back to it).
 
@@ -161,15 +165,84 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
       judgement-style worker (its `advance`/`reject`/`question` verdict routes exactly like the others). The
       subagent returns a fenced ` ```json ` verdict and never touches the board.
    3. **PARSE** the last fenced ` ```json ` block and post the matching act with `<gen>`:
-      - **Advisor verdict — applies whenever the dispatched `role` is the stage's security-advisor**, on
-        BOTH advisor-dispatch paths: (i) `decide` dispatched the advisor as the primary `work`/`reclaim`
+      - **Advisor verdict — applies whenever the dispatched `role` is the stage's advisor** (e.g.
+        `security-advisor`, `code-reviewer`, or any other configured advisor role), on BOTH
+        advisor-dispatch paths: (i) `decide` dispatched the advisor as the primary `work`/`reclaim`
         item (this pass's `role` is the advisor), and (ii) the inline post-submit review below. The advisor
         returns `{status, head, reason?}` (`reason` accompanies veto/hold/advice; the `clean` verdict omits
         it). Post — **never "log only"** — keyed on `status`:
-        - `advice`/`clean` → `node $S/advice.mjs <id> <head> "<reason>"` — records a CLEAN review at `<head>`
-          so `advisor_clear` goes non-vacuous and the card advances next pass. **Skipping this is the
-          clean-card livelock**: no `advisor_state` row → `advisor_clear` false forever → `decide`
-          re-dispatches the advisor every tick.
+        - `advice`/`clean` → `node $S/advice.mjs <id> <head> "<reason>" --role <role>` — records a CLEAN
+          review at `<head>`, posted under **this pass's dispatched advisor role** (`<role>`, e.g.
+          `security-advisor` or `code-reviewer`) so the ADVICE is attributed to the advisor that actually
+          reviewed it, not silently misattributed to security-advisor's identity when a different advisor
+          is configured for this stage. `advice.mjs` defaults `--role` to `security-advisor` when the flag
+          is omitted (preserves single-advisor behavior), but you **must** pass `--role <role>` explicitly
+          here, matching `create.mjs`'s `--role` convention. Recording this so `advisor_clear` goes
+          non-vacuous and the card advances next pass. **Skipping this is the clean-card livelock**: no
+          `advisor_state` row → `advisor_clear` false forever → `decide` re-dispatches the advisor every
+          tick.
+          - **Sub-clause of the above — `advice` ALSO carrying `spawn[]`** (Task A7/A8 — reviewer-raised
+            bugs, e.g. `code-reviewer`'s verdict `{status:"advice", head, reason?, spawn:[{title, file,
+            summary, note?}]}`). **⚠️ Spawn entries are RAW — `{title, file, summary, note?}` — NOT
+            `{title, fingerprint, note?}`: an LLM reviewer cannot reliably compute a sha256 fingerprint
+            itself, so the conductor computes it, never the reviewer.** This refines the `advice`/`clean`
+            route immediately above — it is **not** a separate top-level route (don't double-post
+            `advice.mjs`): first post `advice.mjs` exactly as above (once), **then** for EACH `spawn[i]` in
+            order (cap at 20 entries per verdict, mirroring `reduce()`'s cap — if `spawn.length` exceeds it,
+            process only the first 20 and log the drop count; do not escalate):
+            1. **Compute the deterministic id.** `id=$(node $S/fingerprint.mjs "<repo>" "<spawn[i].file>"
+               "<spawn[i].summary>")` → prints `bug-<fp>` (the full card id, already prefixed). `<repo>` is
+               **not re-fetched** — it's the same `repo` value already resolved for this pass's advisor
+               dispatch context (the `{ doName, cardId, repo, branch, head, watch_paths? }` passed into the
+               subagent this pass, sourced — per the identity-mapping table above — from the card's linked
+               PR). Use `<id>` (the full `bug-<fp>` string this script printed) for BOTH steps 2 and 3 below
+               — never recompute or hand-roll the hash inline.
+            2. **Pre-check (dedup — idempotent on both CREATE and NOTE).** Read `<id>` the SAME way
+               `list-ready.mjs`/`decide()` read any card — `client.getEnriched(id)`, i.e.
+               `GET /boards/<doName>/cards/<id>/enriched`. Fetch the
+               **body**, not just the status — you need `notes[]` (the A4 materialized NOTE thread,
+               `getEnriched`'s `notes: CardNote[]`) to tell whether the repro note already landed, not
+               merely whether the card exists. Concretely:
+               ```
+               curl -s -w '\n%{http_code}' \
+                 -H "authorization: Bearer $YDB_TOKEN_ORCHESTRATOR" \
+                 "$YDB_API_BASE/boards/$YDB_DO_NAME/cards/<id>/enriched"
+               ```
+               Branch:
+               - **non-2xx** → absent — continue to step 3 (CREATE, then NOTE if `spawn[i].note` is set).
+               - **2xx** → the card already exists — check `spawn[i].note`:
+                 - empty/absent → nothing to attach — **SKIP** this entry, move to `spawn[i+1]`.
+                 - non-empty and the body's `notes` array is **empty** → the card was created on a prior
+                   pass but the NOTE call failed or was interrupted before it landed — **skip straight to
+                   step 4** below (do NOT re-run CREATE — the card exists) to (re)post the repro note.
+                 - non-empty and `notes` is **non-empty** → already fully filed — **SKIP** this entry, move
+                   to `spawn[i+1]`.
+               ⚠️ **Known limitation:** this dedups on note-thread emptiness, not on note *content* — if
+               something else ever wrote a NOTE to a freshly-minted `<id>` card before its repro NOTE
+               landed, the repro note would be wrongly treated as already posted and skipped. Acceptable
+               today because nothing else writes to a `<id>` card between its CREATE and its repro NOTE
+               in normal operation — only this branch ever touches it.
+            3. `node $S/create.mjs "<spawn[i].title>" --id <id> --type bug --state dev --parent <cardId>
+               --role orchestrator` — mints the bug card under the **ORCHESTRATOR** identity (parented to
+               the reviewed card; the board bumps its `children_total`, same as the analyst `decomposed`
+               branch below). `create.mjs` defaults `--role` to `analyst` when the flag is omitted — you
+               **must** pass `--role orchestrator` explicitly here, matching the mapping table above
+               (`create`/`note` (Task A7 bug-spawn) → orchestrator) and `note.mjs`, which already hardcodes
+               it; omitting it would post the CREATE under `YDB_TOKEN_ANALYST` instead, violating the
+               load-bearing invariant that only the orchestrator creates cards. A CREATE failure is **not**
+               silently swallowed — log it and stop issuing further spawn entries for this card this pass;
+               the next pass re-dispatches the reviewer (the reviewed card hasn't moved — raising a bug
+               never MOVEs the source card) and it can re-emit the same `spawn[]`; the dedup pre-check
+               (step 2, keyed on the SAME deterministic `<id>` recomputed from the same `(repo,file,summary)`)
+               makes re-creating already-committed bugs a no-op.
+            4. If `spawn[i].note` is non-empty, `node $S/note.mjs <id> "<spawn[i].note>"` — attaches the
+               repro body (file:line, failure_scenario, category, source) to the new bug card. Skip this
+               call entirely when `note` is empty/absent — don't post a blank NOTE. A NOTE failure here is
+               **also not silently swallowed** — log it and stop issuing further spawn entries for this
+               card this pass, exactly like a CREATE failure in step 3 above: the next pass's pre-check
+               (step 2) sees the card exists with an empty `notes[]` and retries the NOTE alone, without
+               re-running CREATE (this is what makes the CREATE→NOTE pair idempotent as a whole, not just
+               the CREATE half).
         - `veto` → `node $S/veto.mjs <id> <head> "<reason>"`; `hold` → `node $S/hold.mjs <id> <head> "<reason>"`
           — parks the card (`decide` noops `veto-open`/`hold-open`; the board's `no_open_veto`/`no_open_hold`
           gate blocks dev→test) until an accountable human runs `clear-veto.mjs` (a `clear_authority`
