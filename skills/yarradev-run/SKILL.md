@@ -71,7 +71,11 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
   clean/advice review) · `promote` → releaser (or the barrier's `promoteAs` role, e.g. analyst) ·
   `create` (epic decomposition) → analyst · `create`/`note` (Task A7 bug-spawn — `advice.spawn[]` →
   `bug-<fingerprint>` card + repro note) → **orchestrator** (role-agnostic primitive; not attributed to the
-  reviewing advisor) · `human-go`/`clear-veto` → human.
+  reviewing advisor) · `reconcile-spawn.mjs` (Phase B / B4 — draining an out-of-band
+  `derived_json.pending_spawn`, same CREATE/NOTE pair as the in-lifecycle bug-spawn) → **orchestrator**,
+  same rationale (role-agnostic; the review-bridge's own `write:advice` token, separate from every
+  `YDB_TOKEN_<ROLE>` here, only ever posts the ADVICE act itself — see `enable-review-bridge`) ·
+  `human-go`/`clear-veto` → human.
   Inline the whole set at loop start, e.g. `YDB_TOKEN_ORCHESTRATOR=… YDB_TOKEN_DEVELOPER=… … node $S/…`
   (or just `YDB_TOKEN=…` for a single-identity setup — everything falls back to it).
 
@@ -85,6 +89,37 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
    to (a promote-shaped gate — human `staging→prod`, or an epic fan-in `barrier` which ALSO carries `role`);
    `escalate` carries reason (a budget is exhausted / CI stalled — park for a human).
    Waiting cards (terminal/blocked/leased/ci-pending/ci-absent/…) are logged to stderr and skipped.
+1b. **Reconcile out-of-band bug-raise requests (Phase B / B4, auto-raised-bug-cards §6).** Independent
+    of step 1's `decide()` routing — a card can carry a `pending_spawn` regardless of its lifecycle
+    action, since raising a bug never MOVEs the reviewed card. This drains findings an out-of-lifecycle
+    `/code-review` posted via the review-bridge (`raise-bugs-from-review.mjs`, B3.5): the bridge holds a
+    `write:advice`-only delegate (B1) and can post nothing but a single ADVICE act, which the board's
+    fold (B3) accumulates onto `derived_json.pending_spawn` — this step is the ONLY thing that ever
+    turns those requests into bug cards (only the orchestrator creates cards).
+    1. `node $S/reconcile-spawn.mjs` scans every card via the SAME `getEnriched()` reads step 1 already
+       performs (`pending_spawn: PendingBugSpawn[]` on the enriched projection); for each card whose
+       `pending_spawn` is non-empty, it drains it in-process (no extra subagent dispatch — this is
+       mechanical, not judgement) by mirroring the A7 spawn branch's exact steps per entry, in order:
+       compute the deterministic id (`fingerprint.mjs`, using the entry's own `repo` — REQUIRED on every
+       out-of-band entry, unlike the in-lifecycle `advice.spawn[]` shape, since there is no "this pass's
+       advisor dispatch context" to source it from here), pre-check via `getEnriched(id)` (dedup — a
+       fully-filed entry, i.e. it exists AND its `notes[]` is non-empty, is a cheap skip), then
+       `create.mjs --id <id> --type bug --state dev --parent <cardId> --role orchestrator` if absent,
+       then `note.mjs <id> "<entry.note>"` if a repro note is present and not yet posted (a card that
+       exists with empty `notes[]` retries the NOTE alone, never re-CREATEs).
+    2. **Cap = 20 mutations (CREATE/NOTE calls) per card per pass**, mirroring `reduce()`'s spawn cap —
+       but it bounds NEW work, not entries examined: an already-filed entry is a free read-only skip and
+       does NOT count against it, so an old, fully-processed prefix of `pending_spawn` never starves
+       newer entries appended after it. Entries beyond the cap are **deferred to the next pass, not
+       dropped** (`pending_spawn` is never trimmed — v1 relies on the existence pre-check alone, per the
+       design's "no extra bookkeeping" decision).
+    3. **A CREATE or NOTE failure stops this card's reconcile for this pass** (log it; don't escalate) —
+       exactly like the in-lifecycle branch's stop-on-error rule. The next pass re-observes the SAME
+       `pending_spawn` (still there, untrimmed) and retries from scratch; the pre-check makes re-creating
+       already-committed bugs a no-op.
+    4. This step touches **no lease, no gen, no CLAIM** — `pending_spawn` isn't part of any card's
+       fencing, so it can run before, after, or interleaved with step 2's per-kind dispatch without any
+       ordering dependency on it.
 2. **For each actionable card, sequentially, up to `pace.maxCardsPerPass` (default 1), branch on `kind`:**
 
    **`escalate`** — a budget is exhausted / CI is stalled; park for a human (**no CLAIM, no dispatch, no quota**):
