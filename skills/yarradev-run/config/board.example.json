@@ -11,7 +11,12 @@
           "watch_paths": ["**/auth/**", "**/*secret*", "**/*credential*", "**/.env*", "**/*.pem", "**/*.key", "**/payments/**", "**/billing/**"] }
       ]
     },
-    "test": { "owner": "tester", "to": "done" },
+    "test": {
+      "owner": "tester", "to": "done",
+      "advisors": [
+        { "role": "code-reviewer", "joins_at": ["test"], "watch_paths": ["**"] }
+      ]
+    },
     "done": { "owner": "releaser", "to": "staging", "gate": "judgement" },
     "staging": { "owner": "", "to": "prod", "gate": "human" },
     "prod": { "owner": "", "to": null },

@@ -71,7 +71,11 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
   clean/advice review) · `promote` → releaser (or the barrier's `promoteAs` role, e.g. analyst) ·
   `create` (epic decomposition) → analyst · `create`/`note` (Task A7 bug-spawn — `advice.spawn[]` →
   `bug-<fingerprint>` card + repro note) → **orchestrator** (role-agnostic primitive; not attributed to the
-  reviewing advisor) · `human-go`/`clear-veto` → human.
+  reviewing advisor) · `reconcile-spawn.mjs` (Phase B / B4 — draining an out-of-band
+  `derived_json.pending_spawn`, same CREATE/NOTE pair as the in-lifecycle bug-spawn) → **orchestrator**,
+  same rationale (role-agnostic; the review-bridge's own `write:advice` token, separate from every
+  `YDB_TOKEN_<ROLE>` here, only ever posts the ADVICE act itself — see `enable-review-bridge`) ·
+  `human-go`/`clear-veto` → human.
   Inline the whole set at loop start, e.g. `YDB_TOKEN_ORCHESTRATOR=… YDB_TOKEN_DEVELOPER=… … node $S/…`
   (or just `YDB_TOKEN=…` for a single-identity setup — everything falls back to it).
 
@@ -85,6 +89,37 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
    to (a promote-shaped gate — human `staging→prod`, or an epic fan-in `barrier` which ALSO carries `role`);
    `escalate` carries reason (a budget is exhausted / CI stalled — park for a human).
    Waiting cards (terminal/blocked/leased/ci-pending/ci-absent/…) are logged to stderr and skipped.
+1b. **Reconcile out-of-band bug-raise requests (Phase B / B4, auto-raised-bug-cards §6).** Independent
+    of step 1's `decide()` routing — a card can carry a `pending_spawn` regardless of its lifecycle
+    action, since raising a bug never MOVEs the reviewed card. This drains findings an out-of-lifecycle
+    `/code-review` posted via the review-bridge (`raise-bugs-from-review.mjs`, B3.5): the bridge holds a
+    `write:advice`-only delegate (B1) and can post nothing but a single ADVICE act, which the board's
+    fold (B3) accumulates onto `derived_json.pending_spawn` — this step is the ONLY thing that ever
+    turns those requests into bug cards (only the orchestrator creates cards).
+    1. `node $S/reconcile-spawn.mjs` scans every card via the SAME `getEnriched()` reads step 1 already
+       performs (`pending_spawn: PendingBugSpawn[]` on the enriched projection); for each card whose
+       `pending_spawn` is non-empty, it drains it in-process (no extra subagent dispatch — this is
+       mechanical, not judgement) by mirroring the A7 spawn branch's exact steps per entry, in order:
+       compute the deterministic id (`fingerprint.mjs`, using the entry's own `repo` — REQUIRED on every
+       out-of-band entry, unlike the in-lifecycle `advice.spawn[]` shape, since there is no "this pass's
+       advisor dispatch context" to source it from here), pre-check via `getEnriched(id)` (dedup — a
+       fully-filed entry, i.e. it exists AND its `notes[]` is non-empty, is a cheap skip), then
+       `create.mjs --id <id> --type bug --state dev --parent <cardId> --role orchestrator` if absent,
+       then `note.mjs <id> "<entry.note>"` if a repro note is present and not yet posted (a card that
+       exists with empty `notes[]` retries the NOTE alone, never re-CREATEs).
+    2. **Cap = 20 mutations (CREATE/NOTE calls) per card per pass**, mirroring `reduce()`'s spawn cap —
+       but it bounds NEW work, not entries examined: an already-filed entry is a free read-only skip and
+       does NOT count against it, so an old, fully-processed prefix of `pending_spawn` never starves
+       newer entries appended after it. Entries beyond the cap are **deferred to the next pass, not
+       dropped** (`pending_spawn` is never trimmed — v1 relies on the existence pre-check alone, per the
+       design's "no extra bookkeeping" decision).
+    3. **A CREATE or NOTE failure stops this card's reconcile for this pass** (log it; don't escalate) —
+       exactly like the in-lifecycle branch's stop-on-error rule. The next pass re-observes the SAME
+       `pending_spawn` (still there, untrimmed) and retries from scratch; the pre-check makes re-creating
+       already-committed bugs a no-op.
+    4. This step touches **no lease, no gen, no CLAIM** — `pending_spawn` isn't part of any card's
+       fencing, so it can run before, after, or interleaved with step 2's per-kind dispatch without any
+       ordering dependency on it.
 2. **For each actionable card, sequentially, up to `pace.maxCardsPerPass` (default 1), branch on `kind`:**
 
    **`escalate`** — a budget is exhausted / CI is stalled; park for a human (**no CLAIM, no dispatch, no quota**):
@@ -152,9 +187,10 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
       `{ deployCmd: cfg.deploy?.staging, smokeCmd: cfg.smoke?.staging }` — after `deploy.staging` succeeds
       the releaser runs `smoke.staging` (if set) and reports the result; the ORCHESTRATOR then folds it by
       posting `node $S/smoke.mjs <id> staging <success|red>` so `staging_smoke` goes non-vacuous (the
-      `auto_release` floor reads it). For the **security-advisor** (when `decide` dispatched the
-      advisor itself as the primary `work`/`reclaim` item — `role` is the stage's advisor, e.g. CI is green
-      but `advisor_clear` is still failing) also pass `{ repo, branch, head, watch_paths }` — the SAME
+      `auto_release` floor reads it). For **the stage's advisor** (when `decide` dispatched the advisor
+      itself as the primary `work`/`reclaim` item — `role` is the stage's configured advisor, e.g.
+      `security-advisor` at `dev` when CI is green but `advisor_clear` is still failing, or
+      `code-reviewer` at `test`) also pass `{ repo, branch, head, watch_paths }` — the SAME
       advisor context the inline post-submit review passes (source `repo`/`head` from the card's linked PR,
       `watch_paths` from the stage's advisor config), so it reviews the linked head and echoes it back.
       For the **analyst** (`epic_analysis`/`epic_decompose`), the generic `{ doName, cardId, state, to,
@@ -168,9 +204,13 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
       - **Advisor verdict — applies whenever the dispatched `role` is the stage's advisor** (e.g.
         `security-advisor`, `code-reviewer`, or any other configured advisor role), on BOTH
         advisor-dispatch paths: (i) `decide` dispatched the advisor as the primary `work`/`reclaim`
-        item (this pass's `role` is the advisor), and (ii) the inline post-submit review below. The advisor
-        returns `{status, head, reason?}` (`reason` accompanies veto/hold/advice; the `clean` verdict omits
-        it). Post — **never "log only"** — keyed on `status`:
+        item (this pass's `role` is the advisor), (ii) the inline post-submit review below, and (iii) the
+        judgement-stage advisor dispatch further below (a judgement stage, e.g. `test`, whose owner's
+        `advance` is gate-blocked on `advisor_clear`). The advisor returns `{status, head, reason?}` for
+        `advice`/`clean`/`veto`/`hold` (`reason` accompanies veto/hold/advice; `clean` omits it), OR
+        `{status:"reject", reason}` — **no `head`** — for an advisor holding a `REJECT` cap (e.g.
+        `code-reviewer`'s blocking verdict: a confirmed bug that IS the reviewed card's own WIP, not a
+        separate/pre-existing one). Post — **never "log only"** — keyed on `status`:
         - `advice`/`clean` → `node $S/advice.mjs <id> <head> "<reason>" --role <role>` — records a CLEAN
           review at `<head>`, posted under **this pass's dispatched advisor role** (`<role>`, e.g.
           `security-advisor` or `code-reviewer`) so the ADVICE is attributed to the advisor that actually
@@ -247,10 +287,50 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
           — parks the card (`decide` noops `veto-open`/`hold-open`; the board's `no_open_veto`/`no_open_hold`
           gate blocks dev→test) until an accountable human runs `clear-veto.mjs` (a `clear_authority`
           signatory) — *you flag; a human signs off*.
+        - `reject` → route via the **REJECT routing** rule below (the advisor persona never emits `to` —
+          the conductor derives the backward edge). This is `code-reviewer`'s blocking verdict; the
+          `security-advisor` never emits it (no `REJECT` cap — VETO/HOLD are its only binding verdicts).
       - judgement `status:"advance"` → `node $S/move.mjs <id> <gen> <to> <role>` (posts under the stage owner).
-      - judgement `status:"reject"` → `node $S/reject.mjs <id> <gen> <verdict.to> <role>` (backward REJECT edge).
-        If it returns **422 `bounce budget exhausted`** the edge has thrashed too often → run
-        `node $S/escalate.mjs <id> "bounce budget: <edge>"` (park for a human) instead of re-looping.
+        - **422 `gate_blocked` with `blocked_by ⊇ advisor_clear`** — this stage has a configured advisor
+          (e.g. `code-reviewer` at `test`) that hasn't reviewed the linked head yet. Unlike the mechanical
+          `dev` stage (whose CI-driven branch dispatches the advisor automatically — leg 12 above, or the
+          post-submit review further below), a judgement stage dispatches its OWNER every pass with no
+          earlier point to have invited the advisor — so do it HERE, inline, same pass, before giving up:
+          1. Derive `<advisorRole> = cfg.lifecycle[state].advisors?.[0]?.role` (board.json's lifecycle for
+             THIS state — never hardcode a name) and dispatch `subagent_type:"yarradev:<advisorRole>"`
+             with `{ doName, cardId, repo, branch, head, watch_paths }` — the SAME context/sourcing as the
+             mechanical **Advisor review** step below (repo/head from the card's linked PR, watch_paths
+             from the stage's advisor config).
+          2. Route its verdict via the **Advisor verdict** rule above:
+             - `advice`/`clean` → post `advice.mjs` (clears `advisor_clear`), THEN **retry**
+               `node $S/move.mjs <id> <gen> <to> <role>` at the SAME `<gen>` — `ADVICE` is `gen-exempt`
+               (never bumps `current_gen`), so the CLAIM's gen from step 1 of this pass is still valid.
+               Committed → advanced. A further 422 here is unexpected — log it, CLEAR_LEASE, and let the
+               next pass re-derive; do **not** loop a second inline advisor dispatch within this pass.
+             - `reject` → route via the **REJECT routing** rule below INSTEAD of retrying the MOVE — the
+               advisor bounced the card for rework; the owner's `advance` verdict is superseded, don't
+               also post it.
+             - `veto`/`hold` → `veto.mjs`/`hold.mjs` as usual — parks the card; the owner's `advance` is
+               moot this pass (the park IS the outcome).
+          A stage with **no configured advisor** never produces `blocked_by ⊇ advisor_clear`, so this
+          bullet is inert for it. Any OTHER `blocked_by` → ordinary Failure-map handling (CLEAR_LEASE;
+          the next pass re-derives).
+      - judgement `status:"reject"` → **REJECT routing.** The stage owner's OWN reject verdict always
+        carries `verdict.to` (e.g. the tester's `{status:"reject","to":"dev"}`) — post
+        `node $S/reject.mjs <id> <gen> <verdict.to> <role>` (backward REJECT edge, posted under the stage
+        owner). An ADVISOR's reject verdict (e.g. `code-reviewer`'s `{status:"reject", reason}`)
+        deliberately carries **NO** `to` — an advisor persona must never hardcode a stage name — so the
+        CONDUCTOR derives it instead: scan the board's compiled machine (`GET /config`, already read this
+        pass for the coherence gate / RELEASE detection) for transitions with `from === state && type ===
+        "REJECT"`; there must be **exactly one** match (the lifecycle's single backward edge for this
+        stage) — zero or more than one → `escalate.mjs` (never guess). Then post `node $S/reject.mjs <id>
+        <gen> <derivedTo> <advisorRole>` — `<gen>` is `current_gen`, already held from this pass's CLAIM
+        (an advisor holds no lease of its own; `REJECT` only needs `gen === current_gen`, not an active
+        lease), and `<advisorRole>` (NOT the stage owner) so the bounce is attributed to the advisor that
+        raised it.
+        Either way, if `reject.mjs` returns **422 `bounce budget exhausted`** the edge has thrashed too
+        often → run `node $S/escalate.mjs <id> "bounce budget: <edge>"` (park for a human) instead of
+        re-looping.
       - **analyst `status:"decomposed"`** (`epic_decompose`, `evidence`-free — the fields are top-level:
         `to`, `children:[{title}]`, `summary`) — a **zero-length `children` array is not a valid
         decomposition**: treat it exactly like `status:"question"` below (escalate/park), mirroring
@@ -270,11 +350,14 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
         - `kind:"respawn"` (fix) → `node $S/push.mjs <id> <gen> <repo> <pr_number> <head>`.
         - **Do NOT MOVE** — the card waits for CI; a later `advance` pass moves it. (A PUSH with no prior
           LINK_PR strands CI, so the work→LINK_PR / respawn→PUSH split is load-bearing.)
-        - **Advisor review** (stages with a configured advisor): after the LINK_PR/PUSH, dispatch
-          `subagent_type:"yarradev:security-advisor"` with `{ doName, cardId, repo, branch, head,
-          watch_paths }`, then route its verdict via the **Advisor verdict** rule above — `advice`/`clean` →
-          `advice.mjs` (NOT "log only" — that was the clean-card livelock), `veto` → `veto.mjs`,
-          `hold` → `hold.mjs`.
+        - **Advisor review** (stages with a configured advisor): after the LINK_PR/PUSH, dispatch the
+          STAGE's configured advisor — `subagent_type:"yarradev:<advisorRole>"` where `<advisorRole> =
+          cfg.lifecycle[state].advisors?.[0]?.role` (board.json's lifecycle for THIS state — e.g.
+          `security-advisor` at `dev`, `code-reviewer` at `test` — **never hardcode a role name here**) —
+          with `{ doName, cardId, repo, branch, head, watch_paths }`, then route its verdict via the
+          **Advisor verdict** rule above — `advice`/`clean` → `advice.mjs` (NOT "log only" — that was the
+          clean-card livelock), `veto`/`hold` → `veto.mjs`/`hold.mjs`, `reject` → the **REJECT routing**
+          rule below. A stage with no configured advisor skips this bullet entirely.
       - `status:"question"` → `node $S/escalate.mjs <id> "<the question>"` (park for a human).
         `"error"` / **no parseable block** → post nothing; log; retry next pass.
    4. **CLEAR_LEASE — always:** `node $S/clear-lease.mjs <id> <gen>` in **every** branch.
@@ -308,7 +391,8 @@ Seed one card in `spec`; give the orchestrator the board token **in your launch 
 it per call. Do **NOT** `export` it: `/loop` dispatches role subagents in this same shell, so an exported
 token is inherited by every subagent (readable via `printenv`) and a prompt-injected one could forge acts
 under your identity. Then run `/loop 30s /yarradev:yarradev-run`. Watch it move spec→dev
-(designer) → dev→test (developer, gated on CI + any advisor) → test→done (tester) → done→staging (releaser
+(designer) → dev→test (developer, gated on CI + security-advisor) → test→done (tester, gated on e2e +
+code-reviewer — a `reject` bounces test→dev, `advice`/`clean` clears the gate) → done→staging (releaser
 runs `deploy.staging`) → and park at `staging` awaiting a human GO; a `byKind:human` identity runs
 `node $S/human-go.mjs <id>` and the next pass promotes staging→prod. Confirm `node $S/list-ready.mjs` goes
 quiet and the card reads `state: prod`.
