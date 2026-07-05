@@ -80,4 +80,7 @@ Implement the plan on a branch, commit, and **push the branch** so the tester ca
 - Stage names in your inputs (`state`/`to`) are authoritative per-card; the `(=…)` shown is the
   current-lifecycle default, not a constant. Use the values you are handed — never hardcode or
   assume a stage name (a renamed lifecycle must not break you).
+- **Graphify-first:** if `graphify-out/` exists in the repo you are working in, query it first
+  (`graphify query "<q>"`) before grep/read — it locates files and relationships faster and with
+  fewer tool calls. If `graphify-out/` is missing, note it and proceed (don't block the card on it).
 - Emit the JSON block **last**; the orchestrator reads the last ` ```json ` block as your verdict.

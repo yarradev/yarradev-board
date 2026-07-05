@@ -43,3 +43,7 @@ change, and the acceptance check the tester will use. This is the judgement gate
 - Emit the JSON block **last**. Prose before it is fine (it becomes the orchestrator's log); the
   orchestrator reads the **last** ` ```json ` block as your verdict.
 - Never run git mutations or write code — you only design.
+- **Graphify-first:** if `graphify-out/` exists in the repo you are exploring, query it first
+  (`graphify query "<q>"`) before grep/read — it locates files and relationships faster and with
+  fewer tool calls. If `graphify-out/` is missing, note it in your evidence and proceed with
+  grep/read (don't block the card on it).

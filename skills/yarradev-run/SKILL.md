@@ -1,6 +1,6 @@
 ---
 name: yarradev-run
-description: The yarradev board orchestrator — a reconciliation loop that drives every ready card through the lifecycle (spec→dev→test→done→staging→prod, with mechanical CI, a security-advisor, a releaser staging deploy, and a human-GO production gate) by reading a yarradev HTTP board, claiming a lease, dispatching the stage's role subagent via the Agent tool, parsing its verdict, and posting the resulting act. Run continuously via /loop.
+description: The yarradev board orchestrator — a reconciliation loop that drives every ready card through the lifecycle (spec→dev→test→done→staging→prod, with mechanical CI, a security-advisor, a releaser staging deploy, and a human-GO production gate) by reading a yarradev HTTP board, claiming a lease, dispatching the stage's role subagent in a tmux pane via `claude -p`, parsing its verdict, and posting the resulting act. Run continuously via /loop.
 ---
 
 # yarradev-run — the orchestrator
@@ -10,15 +10,15 @@ reconcile the board (desired state) toward reality by dispatching role subagents
 **no durable state between passes** — re-read the board every pass.
 
 The deterministic board I/O lives in `scripts/` (plain Node, no judgement). Your only LLM jobs are
-(a) **dispatching** role subagents via the **Agent tool**, (b) **parsing their verdict**, and
+(a) **dispatching** role subagents in tmux panes via `~/work/tools/yarradev-dispatch`, (b) **parsing their verdict**, and
 (c) posting the resulting act via the scripts. Separation of powers: **subagents propose · the board
 disposes (gates + gen-fences) · you route**.
 
 ## Why this runs on your subscription
-The orchestrator (this skill) is the **session** model; role workers are Agent-tool **subagents in
-this same Claude Code session** — so all LLM work draws from your Claude **subscription**. The board
-never sees your Claude credential and makes no model calls. Do **not** introduce `claude -p` or the
-Agent SDK here — that would change the billing rail.
+The orchestrator (this skill) is the **session** model; role workers are dispatched via
+`claude -p` in tmux panes through `~/work/tools/yarradev-dispatch` — all LLM work draws
+from your Claude **subscription**. The board never sees your Claude credential and makes no
+model calls. Billing is unchanged — `claude -p` draws from the same Claude subscription.
 
 ## Session model + effort
 Set these when you start the loop. This skill's only LLM work is routing + verdict parsing, so a cheap
@@ -180,26 +180,22 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
       CI-fail respawn loop never approaches `transition_budget`, bounded only by the 60s `respawn_window_ms`
       leg) → keep **`gen`** (`ok:false` → skip). Thread `gen` **verbatim** into the act you post and into
       CLEAR_LEASE; never reuse a gen across passes.
-   2. **DISPATCH one subagent** via the **Agent tool**, `subagent_type: "yarradev:<role>"`. Pass
-      `{ doName, cardId, state, to, role, title }`; for a **mechanical** stage also pass
-      `{ mode:"mechanical", respawn: (kind === "respawn") }` (+ the prior failure summary on a respawn,
-      best-effort from this pass's log); for the **releaser** (`done→staging` deploy) also pass
-      `{ deployCmd: cfg.deploy?.staging, smokeCmd: cfg.smoke?.staging }` — after `deploy.staging` succeeds
-      the releaser runs `smoke.staging` (if set) and reports the result; the ORCHESTRATOR then folds it by
-      posting `node $S/smoke.mjs <id> staging <success|red>` so `staging_smoke` goes non-vacuous (the
-      `auto_release` floor reads it). For **the stage's advisor** (when `decide` dispatched the advisor
-      itself as the primary `work`/`reclaim` item — `role` is the stage's configured advisor, e.g.
-      `security-advisor` at `dev` when CI is green but `advisor_clear` is still failing, or
-      `code-reviewer` at `test`) also pass `{ repo, branch, head, watch_paths }` — the SAME
-      advisor context the inline post-submit review passes (source `repo`/`head` from the card's linked PR,
-      `watch_paths` from the stage's advisor config), so it reviews the linked head and echoes it back.
-      For the **analyst** (`epic_analysis`/`epic_decompose`), the generic `{ doName, cardId, state, to,
-      role, title }` already carries the epic's title/intent and the target `to` — no extra context
-      needed; do not hardcode which stage it's dispatched at, read it from `state`.
-      **`developer` and `releaser` → `isolation:"worktree"`.** The
-      tester and releaser find the card's branch by `cardId` (`feature/<cardId>-…`). The releaser is a
-      judgement-style worker (its `advance`/`reject`/`question` verdict routes exactly like the others). The
-      subagent returns a fenced ` ```json ` verdict and never touches the board.
+   2. **DISPATCH one subagent** in a **tmux pane** via `~/work/tools/yarradev-dispatch`:
+      a. **Write the subagent prompt** to `/tmp/yarradev-prompt-<cardId>.txt`. Content is the
+         SAME context object you'd pass to the Agent tool — `{ doName, cardId, state, to, role,
+         title }` plus any role-specific extras (mode, respawn, deploy commands, advisor context,
+         etc.), formatted as a clear instruction for the subagent. **Never include board tokens
+         in the prompt file.**
+      b. **Run the dispatch:** `V=$(~/work/tools/yarradev-dispatch <role> <cardId> /tmp/yarradev-prompt-<cardId>.txt)`
+         - Opens a horizontal tmux split pane in the current window
+         - Reads the role's model/effort/tools from `$CLAUDE_PLUGIN_ROOT/agents/<role>.md`
+         - `developer` and `releaser` get `--worktree` isolation automatically
+         - Output tee'd to `$V`; pane stays open 15s after completion
+         - `tmux wait-for` blocks until subagent finishes (pane signals on completion)
+         - Prints the verdict file path to stdout
+      c. **Read the verdict:** `cat $V`, then parse the last fenced ` ```json ` block.
+         All routing below (advisor verdict, judgement advance/reject, mechanical submitted,
+         analyst decomposed, question) is unchanged.
    3. **PARSE** the last fenced ` ```json ` block and post the matching act with `<gen>`:
       - **Advisor verdict — applies whenever the dispatched `role` is the stage's advisor** (e.g.
         `security-advisor`, `code-reviewer`, or any other configured advisor role), on BOTH
@@ -297,8 +293,11 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
           post-submit review further below), a judgement stage dispatches its OWNER every pass with no
           earlier point to have invited the advisor — so do it HERE, inline, same pass, before giving up:
           1. Derive `<advisorRole> = cfg.lifecycle[state].advisors?.[0]?.role` (board.json's lifecycle for
-             THIS state — never hardcode a name) and dispatch `subagent_type:"yarradev:<advisorRole>"`
-             with `{ doName, cardId, repo, branch, head, watch_paths }` — the SAME context/sourcing as the
+             THIS state — never hardcode a name) and dispatch via the same pattern as step 2:
+             write the advisor prompt to `/tmp/yarradev-prompt-<cardId>.txt` with
+             `{ doName, cardId, repo, branch, head, watch_paths }`, then
+             `V=$(~/work/tools/yarradev-dispatch <advisorRole> <cardId> /tmp/yarradev-prompt-<cardId>.txt)`
+             and `cat $V` for the verdict — the SAME context/sourcing as the
              mechanical **Advisor review** step below (repo/head from the card's linked PR, watch_paths
              from the stage's advisor config).
           2. Route its verdict via the **Advisor verdict** rule above:
@@ -351,10 +350,14 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
         - **Do NOT MOVE** — the card waits for CI; a later `advance` pass moves it. (A PUSH with no prior
           LINK_PR strands CI, so the work→LINK_PR / respawn→PUSH split is load-bearing.)
         - **Advisor review** (stages with a configured advisor): after the LINK_PR/PUSH, dispatch the
-          STAGE's configured advisor — `subagent_type:"yarradev:<advisorRole>"` where `<advisorRole> =
+          STAGE's configured advisor via the same dispatch pattern as step 2:
+          write the advisor prompt to `/tmp/yarradev-prompt-<cardId>.txt` with
+          `{ doName, cardId, repo, branch, head, watch_paths }`, then
+          `V=$(~/work/tools/yarradev-dispatch <advisorRole> <cardId> /tmp/yarradev-prompt-<cardId>.txt)`
+          and `cat $V` for the verdict, where `<advisorRole> =
           cfg.lifecycle[state].advisors?.[0]?.role` (board.json's lifecycle for THIS state — e.g.
           `security-advisor` at `dev`, `code-reviewer` at `test` — **never hardcode a role name here**) —
-          with `{ doName, cardId, repo, branch, head, watch_paths }`, then route its verdict via the
+          then route its verdict via the
           **Advisor verdict** rule above — `advice`/`clean` → `advice.mjs` (NOT "log only" — that was the
           clean-card livelock), `veto`/`hold` → `veto.mjs`/`hold.mjs`, `reject` → the **REJECT routing**
           rule below. A stage with no configured advisor skips this bullet entirely.
@@ -381,7 +384,7 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
 | Step | Failure | Do |
 |---|---|---|
 | CLAIM | 409 fenced (stale gen / already leased) | log `claim-failed`, skip card; next pass re-reconciles |
-| Dispatch | subagent error / timeout / no JSON block | post nothing; **CLEAR_LEASE**; retry next pass |
+| Dispatch | yarradev-dispatch error / tmux unavailable / claude -p fails / no JSON block | post nothing; **CLEAR_LEASE**; retry next pass |
 | MOVE/REJECT | 409 fenced (lease/TTL expired mid-work) | **CLEAR_LEASE**; redo next pass |
 | MOVE/REJECT | 422 gate_blocked / bad_act | **CLEAR_LEASE**; `decide` re-derives next pass (gate flipped → wait/respawn; budget → escalate; bounce → escalate) |
 | CLEAR_LEASE | any | best-effort; the lease expires at its TTL anyway |

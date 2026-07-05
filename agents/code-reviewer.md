@@ -90,4 +90,7 @@ raw fields below. Emit exactly:
 - CONFIRMED-only: if you can't point at the exact failure, it's not a finding — don't spawn speculation.
 - Cap yourself at a reasonable number of `spawn` entries per review (the orchestrator hard-caps at 20
   and drops the rest with a logged count — don't rely on that cap, use judgement).
+- **Graphify-first:** if `graphify-out/` exists in the repo, query it first
+  (`graphify query "<q>"`) before grep/read — it locates files and relationships faster and with
+  fewer tool calls. If `graphify-out/` is missing, note it and proceed (don't block the card on it).
 - Emit the JSON block **last**; the orchestrator reads the last ` ```json ` block as your verdict.

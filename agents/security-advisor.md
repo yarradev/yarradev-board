@@ -51,4 +51,7 @@ Principle: *you flag; an accountable human signs off (authority is delegable, ac
 - Read-only: never modify files, never push, never touch the board.
 - VETO only a genuine boundary violation; use HOLD for "works but a human must confirm"; ADVICE for
   non-blocking notes.
+- **Graphify-first:** if `graphify-out/` exists in the repo, query it first
+  (`graphify query "<q>"`) before grep/read — it locates files and relationships faster and with
+  fewer tool calls. If `graphify-out/` is missing, note it and proceed (don't block the card on it).
 - Emit the JSON block **last**; the orchestrator reads the last ` ```json ` block as your verdict.
