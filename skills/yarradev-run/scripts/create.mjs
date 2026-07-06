@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * create.mjs <title...> [--id <id>] [--type story|epic] [--state <s>] [--parent <id>] [--lane fast|full] [--role <r>]
+ * create.mjs <title...> [--id <id>] [--type story|epic] [--state <s>] [--parent <id>] [--priority <n>] [--lane fast|full] [--role <r>]
  *   — mint a new card via a gen-exempt CREATE (Phase 2b Task 6). This is the LIVE production path for
  *   epic decomposition (an analyst fans an epic out into child story cards): SKILL.md's "decomposed"
  *   branch calls this script once per child. reduce()'s "decomposed" case in orchestrator-core is NOT
@@ -29,7 +29,7 @@ const LANE_STATE = { fast: "dev", full: "spec" };
 
 function parseArgs(argv) {
   const titleParts = [];
-  const opts = { id: undefined, type: undefined, state: undefined, parent: undefined, lane: undefined, role: "analyst" };
+  const opts = { id: undefined, type: undefined, state: undefined, parent: undefined, priority: undefined, lane: undefined, role: "analyst" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     switch (a) {
@@ -44,6 +44,13 @@ function parseArgs(argv) {
         break;
       case "--parent":
         opts.parent = argv[++i];
+        break;
+      case "--priority":
+        opts.priority = parseInt(argv[++i], 10);
+        if (isNaN(opts.priority)) {
+          console.error(`usage: --priority must be an integer, got '${argv[i]}'`);
+          process.exit(2);
+        }
         break;
       case "--lane":
         opts.lane = argv[++i];
@@ -62,7 +69,7 @@ function parseArgs(argv) {
 const opts = parseArgs(process.argv.slice(2));
 if (!opts.title) {
   console.error(
-    "usage: create.mjs <title...> [--id <id>] [--type story|epic] [--state <s>] [--parent <id>] [--lane fast|full] [--role <r>]",
+    "usage: create.mjs <title...> [--id <id>] [--type story|epic] [--state <s>] [--parent <id>] [--priority <n>] [--lane fast|full] [--role <r>]",
   );
   process.exit(2);
 }
@@ -75,7 +82,9 @@ if (opts.lane && !state) {
 }
 
 const id = opts.id ?? crypto.randomUUID();
-const data = { type: opts.type ?? "story", title: opts.title };
+const resolvedType = opts.type ?? "story";
+const defaultPriority = resolvedType === "epic" ? 50 : 100;
+const data = { type: resolvedType, title: opts.title, priority: opts.priority ?? defaultPriority };
 if (state) data.state = state;
 if (opts.parent) data.parent_id = opts.parent;
 

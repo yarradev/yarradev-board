@@ -64,6 +64,7 @@ test("create.mjs posts CREATE with --lane fast → state:dev, --parent threaded,
   assert.deepEqual(requests[0].body.data, {
     type: "epic",
     title: "Decompose into workers",
+    priority: 50,
     state: "dev",
     parent_id: "epic-1",
   });
@@ -100,7 +101,7 @@ test("create.mjs omits state when neither --state nor --lane is given (board def
   });
   await new Promise((r) => server.close(r));
 
-  assert.deepEqual(requests[0].body.data, { type: "story", title: "Just a title" });
+  assert.deepEqual(requests[0].body.data, { type: "story", title: "Just a title", priority: 100 });
 });
 
 test("create.mjs --lane wins over --state when both are given", async () => {
@@ -138,6 +139,7 @@ test("create.mjs --id is honored verbatim (deterministic bug-spawn id, Task A7a)
   assert.deepEqual(requests[0].body.data, {
     type: "bug",
     title: "Off-by-one in loop",
+    priority: 100,
     state: "dev",
     parent_id: "c1",
   });
@@ -176,5 +178,68 @@ test("create.mjs exits 2 on missing title (no network call)", async () => {
 
   assert.equal(code, 2);
   assert.match(stderr, /usage: create\.mjs/);
+  assert.equal(requests.length, 0, "must not hit the network on a usage error");
+});
+
+test("create.mjs --priority is posted in card data", async () => {
+  const { server, requests } = startStub();
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address();
+
+  await run(["High-priority task", "--priority", "1"], {
+    YDB_API_BASE: `http://127.0.0.1:${port}`,
+    YDB_DO_NAME: "create-cli-test",
+    YDB_TOKEN: "test.token",
+  });
+  await new Promise((r) => server.close(r));
+
+  assert.equal(requests[0].body.data.priority, 1);
+});
+
+test("create.mjs --type epic defaults to priority 50", async () => {
+  const { server, requests } = startStub();
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address();
+
+  await run(["SSO migration", "--type", "epic"], {
+    YDB_API_BASE: `http://127.0.0.1:${port}`,
+    YDB_DO_NAME: "create-cli-test",
+    YDB_TOKEN: "test.token",
+  });
+  await new Promise((r) => server.close(r));
+
+  assert.equal(requests[0].body.data.priority, 50);
+  assert.equal(requests[0].body.data.type, "epic");
+});
+
+test("create.mjs --type story defaults to priority 100", async () => {
+  const { server, requests } = startStub();
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address();
+
+  await run(["Regular task"], {
+    YDB_API_BASE: `http://127.0.0.1:${port}`,
+    YDB_DO_NAME: "create-cli-test",
+    YDB_TOKEN: "test.token",
+  });
+  await new Promise((r) => server.close(r));
+
+  assert.equal(requests[0].body.data.priority, 100);
+});
+
+test("create.mjs --priority with non-integer exits 2", async () => {
+  const { server, requests } = startStub();
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address();
+
+  const { code, stderr } = await run(["Bad priority", "--priority", "high"], {
+    YDB_API_BASE: `http://127.0.0.1:${port}`,
+    YDB_DO_NAME: "create-cli-test",
+    YDB_TOKEN: "test.token",
+  });
+  await new Promise((r) => server.close(r));
+
+  assert.equal(code, 2);
+  assert.match(stderr, /priority/);
   assert.equal(requests.length, 0, "must not hit the network on a usage error");
 });
