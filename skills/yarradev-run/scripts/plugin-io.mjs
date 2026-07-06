@@ -128,7 +128,13 @@ export function makeClient(opts = {}) {
  */
 export function emit(result, extra = {}) {
   const ok = result?.outcome === "committed";
-  process.stdout.write(JSON.stringify({ ok, ...extra, status: result?.status, outcome: result?.outcome ?? null }) + "\n");
+  // Surface the board's diagnostic so 403 (capability/auth) and non-gate 422 rejections aren't opaque.
+  // toAppendResult normalizes to `reason` on the synthesized path; the outcome-present path returns the
+  // board body verbatim, where the board's own convention is `error` — read either key (GH #17).
+  const reason = result?.reason ?? result?.error ?? null;
+  process.stdout.write(
+    JSON.stringify({ ok, ...extra, status: result?.status, outcome: result?.outcome ?? null, ...(reason != null ? { reason } : {}) }) + "\n",
+  );
   return ok ? 0 : 1;
 }
 

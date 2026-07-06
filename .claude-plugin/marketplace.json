@@ -1,7 +1,7 @@
 {
   "name": "yarradev",
   "owner": { "name": "Yarra Systems", "url": "https://github.com/yarradev" },
-  "description": "yarradev board orchestrator plugin — reconciliation-loop skill + role subagents (designer/developer/tester/security-advisor/releaser) that drive a yarradev HTTP board through a gated lifecycle (spec→dev→test→done→staging→prod) on your own Claude subscription.",
+  "description": "yarradev board orchestrator plugin — reconciliation-loop skill + role subagents (designer/developer/tester/security-advisor/code-reviewer/devops/releaser) that drive a yarradev HTTP board through a gated lifecycle (spec→dev→test→done→staging→prod) on your own Claude subscription.",
   "plugins": [
     {
       "name": "yarradev",

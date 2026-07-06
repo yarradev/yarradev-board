@@ -28,4 +28,4 @@ const r = respawn
   ? await client.act({ type: "CLAIM", item_id: id, data: { role, ttl_s: ttlS ?? 1800, respawn: true } })
   : await client.claim(id, role, ttlS);
 // Thread the granted gen (from the CLAIM dispatch) into move/clear-lease — see SKILL.md.
-process.exit(emit(r, { gen: genOf(r) }));
+process.exit(emit(r, { gen: genOf(r), blocked_by: r?.blocked_by }));

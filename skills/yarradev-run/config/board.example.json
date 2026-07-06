@@ -17,7 +17,13 @@
         { "role": "code-reviewer", "joins_at": ["test"], "watch_paths": ["**"] }
       ]
     },
-    "done": { "owner": "releaser", "to": "staging", "gate": "judgement" },
+    "done": {
+      "owner": "releaser", "to": "staging", "gate": "judgement",
+      "advisors": [
+        { "role": "devops", "joins_at": ["done"],
+          "watch_paths": ["**/wrangler.*", "**/*.jsonc", "**/*.toml", "**/deploy.*", "**/scripts/deploy*"] }
+      ]
+    },
     "staging": { "owner": "", "to": "prod", "gate": "human" },
     "prod": { "owner": "", "to": null },
     "epic_analysis":    { "owner": "analyst", "to": "epic_decompose",   "gate": "judgement" },

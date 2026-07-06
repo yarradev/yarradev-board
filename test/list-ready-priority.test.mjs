@@ -137,3 +137,78 @@ test("list-ready emits cards in (epic priority, card priority, id) order", async
     "story-refactor",
   ], "cards must be in (epic priority, card priority, id) order");
 });
+
+test("list-ready tie-breaks on created_ts (older first) when (epic, card) priority tie (GH #16)", async () => {
+  // Two standalone stories at default priority — a UUID-named backlog card created LATER must NOT jump
+  // the named card created earlier just because '2' < 'c'. With created_ts present on both, FIFO wins.
+  // NB: loadConfig() reads the repo's real board.json lifecycle (env only overrides apiBase/doName), so
+  // the stub machine must match the FULL lifecycle, same as the test above.
+  const lifecycle = {
+    backlog: { owner: "designer", to: "spec" },
+    spec: { owner: "designer", to: "dev" },
+    dev: { owner: "developer", to: "test", gate: "mechanical" },
+    test: { owner: "tester", to: "done" },
+    done: { owner: "releaser", to: "staging", gate: "judgement" },
+    staging: { owner: "", to: "prod", gate: "human" },
+    prod: { owner: "", to: null },
+    epic_analysis: { owner: "analyst", to: "epic_decompose", gate: "judgement" },
+    epic_decompose: { owner: "analyst", to: "epic_integrating", gate: "judgement" },
+    epic_integrating: { owner: "", to: "epic_done", gate: "barrier", promoteAs: "analyst" },
+    epic_done: { owner: "", to: null },
+  };
+  const transitions = [];
+  for (const [state, cfg] of Object.entries(lifecycle)) {
+    if (cfg.to) transitions.push({ from: state, to: cfg.to, type: "MOVE" });
+  }
+  const states = [...new Set([...Object.keys(lifecycle), ...transitions.map((t) => t.from), ...transitions.map((t) => t.to)])];
+  const machine = { states, transitions, terminal: ["prod", "epic_done"] };
+
+  const cards = [
+    { id: "2d13d8cc-uuid", state: "dev", title: "UUID backlog", type: "story", priority: 100, created_ts: 1751800002 },
+    { id: "card-m7ui1b00-cr02", state: "dev", title: "Named work", type: "story", priority: 100, created_ts: 1751800001 },
+  ];
+
+  const urlPath = (req) => new URL(req.url, `http://${req.headers.host ?? "localhost"}`).pathname;
+  const server = createServer((req, res) => {
+    const path = urlPath(req);
+    if (path === "/boards/test-ts/config" && req.method === "GET") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(machine));
+      return;
+    }
+    if (path === "/boards/test-ts/cards" && req.method === "GET") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ items: cards }));
+      return;
+    }
+    const match = path.match(/\/boards\/test-ts\/cards\/(.+)\/enriched/);
+    if (match && req.method === "GET") {
+      const card = cards.find((c) => c.id === match[1]);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        ...card,
+        current_gen: 1,
+        open_questions: [],
+        vetoes: [],
+        next_transitions: [{ from: card.state, to: lifecycle[card.state]?.to, type: "MOVE" }],
+      }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address();
+
+  const { code, stdout } = await run({
+    YDB_API_BASE: `http://127.0.0.1:${port}`,
+    YDB_DO_NAME: "test-ts",
+    YDB_TOKEN: "test.token",
+  });
+  await new Promise((r) => server.close(r));
+
+  assert.equal(code, 0);
+  const ids = stdout.trim().split("\n").filter(Boolean).map((l) => JSON.parse(l).id);
+  // Older created_ts first → named card (1751800001) before the UUID (1751800002), despite '2' < 'c'.
+  assert.deepEqual(ids, ["card-m7ui1b00-cr02", "2d13d8cc-uuid"], "created_ts tie-break: older card first");
+});
