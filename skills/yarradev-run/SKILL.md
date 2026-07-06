@@ -90,8 +90,8 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
 
 0. **Check context-pressure flag.** If `/tmp/yarradev-prep-clear` exists, do NOT claim a new
    card this pass. If a card is currently in-flight (leased), finish it normally — post its act
-   and CLEAR_LEASE. Then write a partial `/tmp/yarradev-epic-done` (see epic completion below)
-   and call `/exit`. If no card is in-flight, write the signal and exit immediately.
+   and CLEAR_LEASE. Then call `/exit`. If no card is in-flight, exit immediately. The wrapper
+   detects clean exit without an epic-done signal and restarts after a short delay.
 
 1. **List ready cards:** `node $S/list-ready.mjs` → one JSON line per actionable card:
    `{ "kind":"work"|"advance"|"respawn"|"reclaim"|"promote"|"escalate", "id", "state", "role"?, "to"?, "reason"?, "title" }`.
