@@ -78,9 +78,20 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
   `human-go`/`clear-veto` → human.
   Inline the whole set at loop start, e.g. `YDB_TOKEN_ORCHESTRATOR=… YDB_TOKEN_DEVELOPER=… … node $S/…`
   (or just `YDB_TOKEN=…` for a single-identity setup — everything falls back to it).
+- **Epic-boundary context clearing.** When an epic reaches `epic_done`, the conductor writes
+  `/tmp/yarradev-epic-done` (JSON: epic id, title, completedAt, storyCount) and calls `/exit`.
+  An optional external wrapper (`~/work/tools/yarradev-loop`) watches this file and restarts
+  the session with clean context. Without the wrapper, the conductor exits cleanly — restart
+  manually. A context-pressure flag (`/tmp/yarradev-prep-clear`) triggers the same exit
+  sequence mid-epic when the context window is filling up.
 
 ## Per-pass procedure (one /loop invocation)
 Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
+
+0. **Check context-pressure flag.** If `/tmp/yarradev-prep-clear` exists, do NOT claim a new
+   card this pass. If a card is currently in-flight (leased), finish it normally — post its act
+   and CLEAR_LEASE. Then write a partial `/tmp/yarradev-epic-done` (see epic completion below)
+   and call `/exit`. If no card is in-flight, write the signal and exit immediately.
 
 1. **List ready cards:** `node $S/list-ready.mjs` → one JSON line per actionable card:
    `{ "kind":"work"|"advance"|"respawn"|"reclaim"|"promote"|"escalate", "id", "state", "role"?, "to"?, "reason"?, "title" }`.
@@ -174,6 +185,16 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
         and fall through** — the next pass re-derives (it re-reads child completion and either re-parks the
         barrier `noop fan-in n/total` or re-promotes once the child is terminal again). No human action.
       - any other `blocked_by` → log and let the next pass re-derive (same as `advance`'s 422 path).
+   **Epic completion.** If this promote was for an epic card (`type === "epic"`) and the
+   transition was `epic_integrating → epic_done` (the barrier gate cleared), the epic and all
+   its children are terminal. After CLEAR_LEASE:
+   1. Gather summary: epic id, title, `children_total`, current time.
+   2. Write `/tmp/yarradev-epic-done`:
+      `{"epicId":"<id>","title":"<title>","completedAt":"<ISO8601>","storyCount":<children_total>,"bugCount":0}`
+   3. Call `/exit`. The wrapper restarts the session with clean context.
+   
+   If this was NOT an epic barrier (e.g. human GO `staging→prod`), do NOT write the signal —
+   the loop continues normally.
 
    **`work`**, **`respawn`**, or **`reclaim`** — dispatch the stage owner (`reclaim` = a prior lease
    expired; handle it identically to `work`):
@@ -367,13 +388,24 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
         `"error"` / **no parseable block** → post nothing; log; retry next pass.
    4. **CLEAR_LEASE — always:** `node $S/clear-lease.mjs <id> <gen>` in **every** branch.
    5. Log a one-line outcome.
-3. **Yield.** Re-run via `/loop <interval> /yarradev:yarradev-run` (interval ≥
+3. **Yield.** Also increment the epic pass counter:
+   ```
+   COUNT=$(cat /tmp/yarradev-epic-pass-count 2>/dev/null || echo 0)
+   echo $((COUNT + 1)) > /tmp/yarradev-epic-pass-count
+   ```
+   If `$COUNT` reaches 40 (≈3.3h at 5-min intervals), the same pass writes
+   `/tmp/yarradev-prep-clear` itself (the next pass's step 0 catches it).
+   This is the safety valve when no statusline CTX% integration is available.
+   Re-run via `/loop <interval> /yarradev:yarradev-run` (interval ≥
    `pace.minLoopIntervalS`, default 5m; keep it under your prompt-cache TTL for cache hits).
 
 ## Discipline & safety
 - **One subagent per card per pass.** A card advances at most one stage per pass; the next pass
-- **Plugin bugs are not your job to fix.** If a script misbehaves (unexpected output shape, missing fields, crash), log it and escalate — do not silently work around it. Report it at https://github.com/yarradev/yarradev-board/issues/new so it gets fixed at the source.
   re-reconciles. `maxCardsPerPass:1` keeps it single-threaded.
+- **Process epics in priority order; finish one before starting the next.** `list-ready.mjs` emits
+  cards sorted by (epic priority, card priority, id). Process the first actionable card in that
+  order. Do not pick up a story from a different epic while the current epic has ready work.
+- **Plugin bugs are not your job to fix.** If a script misbehaves (unexpected output shape, missing fields, crash), log it and escalate — do not silently work around it. Report it at https://github.com/yarradev/yarradev-board/issues/new so it gets fixed at the source.
 - **The loop is single-threaded — do not re-enter while a pass is in flight.** Even if `/loop`'s
   interval is shorter than a pass, an overlap is safe (the second CLAIM is fenced 409 → skipped) —
   but don't rely on it.
