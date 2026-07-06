@@ -90,7 +90,13 @@ for (const summary of items) {
 }
 
 // Phase 2: resolve root epic priorities and sort
-// Sort key: (root_epic_priority, card_priority, card_id)
+// Sort key: (root_epic_priority, card_priority, created_ts?, card_id)
+// The created_ts tie-break (GH #16) only engages when BOTH tied cards expose a creation timestamp on the
+// enriched projection — older first (FIFO queue semantics). Without it, two default-priority cards
+// (e.g. a UUID-named backlog card and a named epic card) fall through to id-localeCompare, which lets a
+// UUID ASCII prefix ('1' < 'c') jump named work arbitrarily. Once the board exposes created_ts/created_at
+// on every enriched card, this activates and removes that accidental ordering.
+const tsOf = (c) => c.created_ts ?? c.created_at ?? null;
 const sorted = [...enriched.values()].sort((a, b) => {
   const epA = epicPriorityOf(a, enriched);
   const epB = epicPriorityOf(b, enriched);
@@ -98,6 +104,9 @@ const sorted = [...enriched.values()].sort((a, b) => {
   const pA = a.priority ?? 100;
   const pB = b.priority ?? 100;
   if (pA !== pB) return pA - pB;
+  const tA = tsOf(a);
+  const tB = tsOf(b);
+  if (tA != null && tB != null && tA !== tB) return Number(tA) - Number(tB);
   return (a.id ?? "").localeCompare(b.id ?? "");
 });
 

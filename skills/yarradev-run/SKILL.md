@@ -10,13 +10,13 @@ reconcile the board (desired state) toward reality by dispatching role subagents
 **no durable state between passes** — re-read the board every pass.
 
 The deterministic board I/O lives in `scripts/` (plain Node, no judgement). Your only LLM jobs are
-(a) **dispatching** role subagents in tmux panes via `~/work/tools/yarradev-dispatch`, (b) **parsing their verdict**, and
+(a) **dispatching** role subagents via `node $S/dispatch-and-wait.mjs` (the wrapper around the user-local async `~/work/tools/yarradev-dispatch`), (b) **parsing their verdict**, and
 (c) posting the resulting act via the scripts. Separation of powers: **subagents propose · the board
 disposes (gates + gen-fences) · you route**.
 
 ## Why this runs on your subscription
 The orchestrator (this skill) is the **session** model; role workers are dispatched via
-`claude -p` in tmux panes through `~/work/tools/yarradev-dispatch` — all LLM work draws
+`claude -p` in tmux panes through `~/work/tools/yarradev-dispatch` (wrapped synchronously by `$S/dispatch-and-wait.mjs`, see step 2b) — all LLM work draws
 from your Claude **subscription**. The board never sees your Claude credential and makes no
 model calls. Billing is unchanged — `claude -p` draws from the same Claude subscription.
 
@@ -61,7 +61,7 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
 - **Per-role identities (least privilege).** Each act is posted under the **role that produced it**, via a
   per-role token: the scripts read `YDB_TOKEN_<ROLE>` (upper-case, `-`→`_`: `YDB_TOKEN_DEVELOPER`,
   `YDB_TOKEN_SECURITY_ADVISOR`, `YDB_TOKEN_CODE_REVIEWER`, `YDB_TOKEN_ORCHESTRATOR`, `YDB_TOKEN_DESIGNER`,
-  `YDB_TOKEN_TESTER`, `YDB_TOKEN_RELEASER`, `YDB_TOKEN_ANALYST`, `YDB_TOKEN_HUMAN`), **falling back to the
+  `YDB_TOKEN_TESTER`, `YDB_TOKEN_RELEASER`, `YDB_TOKEN_ANALYST`, `YDB_TOKEN_DEVOPS`, `YDB_TOKEN_HUMAN`), **falling back to the
   shared `YDB_TOKEN`** if a role's token isn't set (the fallback is logged to stderr). You hold **all** the
   role tokens and the scripts select the right one per act; **subagents still never see any token**.
   Mapping: `claim`/`clear-lease`/`escalate` → orchestrator · `move`/`reject` → the **stage owner** (passed
@@ -203,19 +203,25 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
       CI-fail respawn loop never approaches `transition_budget`, bounded only by the 60s `respawn_window_ms`
       leg) → keep **`gen`** (`ok:false` → skip). Thread `gen` **verbatim** into the act you post and into
       CLEAR_LEASE; never reuse a gen across passes.
-   2. **DISPATCH one subagent** in a **tmux pane** via `~/work/tools/yarradev-dispatch`:
+   2. **DISPATCH one subagent** in a **tmux pane** via the dispatch wrapper:
       a. **Write the subagent prompt** to `/tmp/yarradev-prompt-<cardId>.txt`. Content is the
          SAME context object you'd pass to the Agent tool — `{ doName, cardId, state, to, role,
          title }` plus any role-specific extras (mode, respawn, deploy commands, advisor context,
-         etc.), formatted as a clear instruction for the subagent. **Never include board tokens
-         in the prompt file.**
-      b. **Run the dispatch:** `V=$(~/work/tools/yarradev-dispatch <role> <cardId> /tmp/yarradev-prompt-<cardId>.txt)`
-         - Opens a horizontal tmux split pane in the current window
-         - Reads the role's model/effort/tools from `$CLAUDE_PLUGIN_ROOT/agents/<role>.md`
-         - `developer` and `releaser` get `--worktree` isolation automatically
-         - Output tee'd to `$V`; pane stays open 15s after completion
-         - `tmux wait-for` blocks until subagent finishes (pane signals on completion)
-         - Prints the verdict file path to stdout
+         etc.), formatted as a clear instruction for the subagent. **Include the card's existing
+         `notes[]`** (the prior-stage rationale — designer plan, reviewer findings — already on the
+         `getEnriched` read this pass) so the next owner reads forward context instead of re-deriving
+         it from scratch (GH #18). **Never include board tokens in the prompt file.**
+      b. **Run the dispatch:** `V=$(node $S/dispatch-and-wait.mjs <role> <cardId> /tmp/yarradev-prompt-<cardId>.txt)`
+         - `dispatch-and-wait.mjs` wraps the user-local **async** `~/work/tools/yarradev-dispatch` tool and
+           **blocks until the subagent's verdict is ready**: it dispatches (backgrounding `claude -p`), then
+           polls the dispatch manifest (`~/.local/share/claude-bg/dispatch-manifest.jsonl`) for the matching
+           `{"status":"done","verdictPath":…}` entry, then prints the verdict file path.
+         - The wrapped tool reads the role's model/effort/tools from `$CLAUDE_PLUGIN_ROOT/agents/<role>.md`;
+           `developer` and `releaser` get `--worktree` isolation automatically.
+         - Do NOT call `~/work/tools/yarradev-dispatch` directly — it is fire-and-forget (returns the verdict
+           path immediately while `claude -p` is still running), so a bare `cat $V` reads an empty file and
+           the conductor mis-reads "no JSON block" as a dispatch failure (GH #19). The wrapper is what makes
+           `cat $V` below read the *completed* verdict.
       c. **Read the verdict:** `cat $V`, then parse the last fenced ` ```json ` block.
          All routing below (advisor verdict, judgement advance/reject, mechanical submitted,
          analyst decomposed, question) is unchanged.
@@ -309,7 +315,13 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
         - `reject` → route via the **REJECT routing** rule below (the advisor persona never emits `to` —
           the conductor derives the backward edge). This is `code-reviewer`'s blocking verdict; the
           `security-advisor` never emits it (no `REJECT` cap — VETO/HOLD are its only binding verdicts).
-      - judgement `status:"advance"` → `node $S/move.mjs <id> <gen> <to> <role>` (posts under the stage owner).
+      - judgement `status:"advance"` → `node $S/move.mjs <id> <gen> <to> <role>` (posts under the stage owner),
+        THEN, if the verdict carries `summary`/`evidence`, `node $S/note.mjs <id> "[<role>→<to>] <summary>
+        <evidence>"` — `note.mjs` is gen-exempt (posts under the orchestrator identity, ignores gen), so it
+        will not race the MOVE's gen fence. Skip the NOTE when both fields are empty. This persists the
+        stage's rationale (e.g. the designer's plan) onto the card's `notes[]`, which the next owner reads
+        forward via the `notes[]` injected into its dispatch prompt (step 2a) instead of re-deriving it
+        from scratch (GH #18).
         - **422 `gate_blocked` with `blocked_by ⊇ advisor_clear`** — this stage has a configured advisor
           (e.g. `code-reviewer` at `test`) that hasn't reviewed the linked head yet. Unlike the mechanical
           `dev` stage (whose CI-driven branch dispatches the advisor automatically — leg 12 above, or the
@@ -319,8 +331,9 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
              THIS state — never hardcode a name) and dispatch via the same pattern as step 2:
              write the advisor prompt to `/tmp/yarradev-prompt-<cardId>.txt` with
              `{ doName, cardId, repo, branch, head, watch_paths }`, then
-             `V=$(~/work/tools/yarradev-dispatch <advisorRole> <cardId> /tmp/yarradev-prompt-<cardId>.txt)`
-             and `cat $V` for the verdict — the SAME context/sourcing as the
+             `V=$(node $S/dispatch-and-wait.mjs <advisorRole> <cardId> /tmp/yarradev-prompt-<cardId>.txt)`
+             and `cat $V` for the verdict (the wrapper blocks until the advisor's verdict lands, so this
+             inline same-pass advice actually completes) — the SAME context/sourcing as the
              mechanical **Advisor review** step below (repo/head from the card's linked PR, watch_paths
              from the stage's advisor config).
           2. Route its verdict via the **Advisor verdict** rule above:
@@ -376,8 +389,8 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
           STAGE's configured advisor via the same dispatch pattern as step 2:
           write the advisor prompt to `/tmp/yarradev-prompt-<cardId>.txt` with
           `{ doName, cardId, repo, branch, head, watch_paths }`, then
-          `V=$(~/work/tools/yarradev-dispatch <advisorRole> <cardId> /tmp/yarradev-prompt-<cardId>.txt)`
-          and `cat $V` for the verdict, where `<advisorRole> =
+          `V=$(node $S/dispatch-and-wait.mjs <advisorRole> <cardId> /tmp/yarradev-prompt-<cardId>.txt)`
+          and `cat $V` for the verdict (the wrapper blocks until it lands), where `<advisorRole> =
           cfg.lifecycle[state].advisors?.[0]?.role` (board.json's lifecycle for THIS state — e.g.
           `security-advisor` at `dev`, `code-reviewer` at `test` — **never hardcode a role name here**) —
           then route its verdict via the
@@ -419,7 +432,7 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
 | Step | Failure | Do |
 |---|---|---|
 | CLAIM | 409 fenced (stale gen / already leased) | log `claim-failed`, skip card; next pass re-reconciles |
-| Dispatch | yarradev-dispatch error / tmux unavailable / claude -p fails / no JSON block | post nothing; **CLEAR_LEASE**; retry next pass |
+| Dispatch | `dispatch-and-wait.mjs` non-zero exit (tool missing / dispatch failed / poll timeout) / subagent finished with no JSON verdict in `$V` | post nothing; **CLEAR_LEASE**; retry next pass. (An empty `$V` mid-run is NOT this — the wrapper blocks until the verdict is ready, so an empty file after it returns means the subagent produced no verdict, a real failure.) |
 | MOVE/REJECT | 409 fenced (lease/TTL expired mid-work) | **CLEAR_LEASE**; redo next pass |
 | MOVE/REJECT/LINK_PR/PUSH | 422 gate_blocked / bad_act | **CLEAR_LEASE**; `decide` re-derives next pass (gate flipped → wait/respawn; budget → escalate; bounce → escalate). `blocked_by` is surfaced so you can branch on the failing predicate. |
 | CLEAR_LEASE | any | best-effort; the lease expires at its TTL anyway |
