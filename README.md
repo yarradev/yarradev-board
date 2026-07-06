@@ -29,8 +29,8 @@ calls**; it only stores the work log and enforces the state machine. This plugin
 ## Install
 
 ```
-/plugin marketplace add yarradev/public-claude-plugins
-/plugin install yarradev@yarradev-local
+/plugin marketplace add yarradev/yarradev-board
+/plugin install yarradev@yarradev
 ```
 
 Or load locally during development by enabling the plugin from this checkout.

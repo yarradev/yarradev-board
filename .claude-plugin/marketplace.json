@@ -1,12 +1,12 @@
 {
-  "name": "yarradev-local",
-  "owner": { "name": "Nabeel Shaheen" },
-  "description": "Local single-plugin marketplace for the yarradev (Cloudflare HTTP-board) orchestrator — dogfood/dev install from this working copy.",
+  "name": "yarradev",
+  "owner": { "name": "Yarra Systems", "url": "https://github.com/yarradev" },
+  "description": "yarradev board orchestrator plugin — reconciliation-loop skill + role subagents (designer/developer/tester/security-advisor/releaser) that drive a yarradev HTTP board through a gated lifecycle (spec→dev→test→done→staging→prod) on your own Claude subscription.",
   "plugins": [
     {
       "name": "yarradev",
-      "source": "./",
-      "description": "yarradev board orchestrator over a Cloudflare HTTP board (acme:main) + role subagents."
+      "source": { "source": "github", "repo": "yarradev/yarradev-board" },
+      "description": "Agent-native SDLC orchestrator: a reconciliation-loop skill + role subagents that drive a yarradev HTTP board through a gated lifecycle (spec→dev→test→done→staging→prod) under per-role board identities — running on your own Claude subscription."
     }
   ]
 }
