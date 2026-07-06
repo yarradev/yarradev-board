@@ -74,9 +74,6 @@ test("list-ready emits cards in (epic priority, card priority, id) order", async
   // Group epA=20 (epic-audit): story-export (p:1), epic-audit (p:20)
   // Group epA=50 (standalone): story-refactor (p:50)
 
-  let listCallCount = 0;
-  const enrichedCalls = [];
-
   const urlPath = (req) => new URL(req.url, `http://${req.headers.host ?? "localhost"}`).pathname;
 
   const server = createServer((req, res) => {
@@ -87,7 +84,6 @@ test("list-ready emits cards in (epic priority, card priority, id) order", async
       return;
     }
     if (path === "/boards/test-priority/cards" && req.method === "GET") {
-      listCallCount++;
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ items: cards }));
       return;
@@ -96,7 +92,6 @@ test("list-ready emits cards in (epic priority, card priority, id) order", async
     const match = path.match(/\/boards\/test-priority\/cards\/(.+)\/enriched/);
     if (match && req.method === "GET") {
       const id = match[1];
-      enrichedCalls.push(id);
       const card = cards.find((c) => c.id === id);
       if (!card) {
         res.writeHead(404);

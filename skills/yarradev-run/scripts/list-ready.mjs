@@ -34,11 +34,13 @@ import { makeClient, loadConfig } from "./plugin-io.mjs";
 function epicPriorityOf(card, enriched) {
   if (card.type === "epic") return card.priority ?? 50;
   let cursor = card;
-  while (cursor && cursor.parent_id) {
+  let depth = 0;
+  while (cursor && cursor.parent_id && depth < 50) {
     const parent = enriched.get(cursor.parent_id);
     if (!parent) break;
     if (parent.type === "epic") return parent.priority ?? 50;
     cursor = parent;
+    depth++;
   }
   // Standalone or unresolvable parent chain — use own priority
   return card.priority ?? 100;
