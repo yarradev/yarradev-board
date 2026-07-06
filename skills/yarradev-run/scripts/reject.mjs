@@ -14,4 +14,4 @@ if (!id || gen === undefined || !to) {
 }
 // `role` = the stage owner posting the REJECT → its per-role identity; omit to use the shared YDB_TOKEN.
 const r = await makeClient({ role }).reject(id, Number(gen), to);
-process.exit(emit(r));
+process.exit(emit(r, { blocked_by: r?.blocked_by }));

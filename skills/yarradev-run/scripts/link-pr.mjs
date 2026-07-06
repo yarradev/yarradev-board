@@ -15,4 +15,4 @@ if (!id || gen === undefined || !repo || !pr || !head) {
   process.exit(2);
 }
 const r = await makeClient({ role: "developer" }).linkPr(id, Number(gen), { repo, pr_number: Number(pr), head });
-process.exit(emit(r));
+process.exit(emit(r, { blocked_by: r?.blocked_by }));

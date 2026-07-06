@@ -129,8 +129,10 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
    **`advance`** — a mechanical gate (e.g. CI) is satisfied; MOVE with **no dispatch** (no subscription cost):
    1. `node $S/claim.mjs <id> <role> <pace.claimTtlS>` → keep `gen` (`ok:false` → log `claim-failed`, skip).
       (`role` is the mechanical stage's owner, carried on the `advance` line — don't hardcode `developer`.)
-   2. `node $S/move.mjs <id> <gen> <to> <role>` (posts under the stage owner's identity). Committed →
-      advanced. **422 `gate_blocked`** (CI flipped since the list) → log, fall through to CLEAR; next pass re-derives.
+   2. `node $S/move.mjs <id> <gen> <to> <role>` (posts under the stage owner's identity). Prints
+      `{ ok, status, outcome, blocked_by? }` (all act scripts now surface `blocked_by` from the board's
+      AppendResult). Committed → advanced. **422 `gate_blocked`** (CI flipped since the list) → log,
+      fall through to CLEAR; next pass re-derives.
    3. `node $S/clear-lease.mjs <id> <gen>` — always.
 
    **`promote`** — a promote-shaped gate: MOVE at the card's CURRENT gen (**no CLAIM** — a CLAIM bump would
@@ -386,7 +388,7 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
 | CLAIM | 409 fenced (stale gen / already leased) | log `claim-failed`, skip card; next pass re-reconciles |
 | Dispatch | yarradev-dispatch error / tmux unavailable / claude -p fails / no JSON block | post nothing; **CLEAR_LEASE**; retry next pass |
 | MOVE/REJECT | 409 fenced (lease/TTL expired mid-work) | **CLEAR_LEASE**; redo next pass |
-| MOVE/REJECT | 422 gate_blocked / bad_act | **CLEAR_LEASE**; `decide` re-derives next pass (gate flipped → wait/respawn; budget → escalate; bounce → escalate) |
+| MOVE/REJECT/LINK_PR/PUSH | 422 gate_blocked / bad_act | **CLEAR_LEASE**; `decide` re-derives next pass (gate flipped → wait/respawn; budget → escalate; bounce → escalate). `blocked_by` is surfaced so you can branch on the failing predicate. |
 | CLEAR_LEASE | any | best-effort; the lease expires at its TTL anyway |
 
 ## Verify

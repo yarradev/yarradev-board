@@ -28,4 +28,4 @@ if (!card || card.current_gen == null) {
 }
 // core's move() returns an AppendResult; blocked_by surfaces the failing gate predicate(s) on a 422.
 const r = await client.move(id, card.current_gen, to);
-process.exit(emit(r, { blocked_by: r.blocked_by }));
+process.exit(emit(r, { blocked_by: r?.blocked_by }));
