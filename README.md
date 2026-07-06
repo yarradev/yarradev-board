@@ -131,6 +131,20 @@ The second form also runs the live HTTP-rail tests against the seeded board (LIN
 exercised only by the demo runbook above — it consumes your subscription in-session and can't be
 unit-tested. Automated tests cover the deterministic rail (scripts + gen-fence/gate contract) only.
 
+## Bugs & feedback
+
+Found a bug? Open an issue:
+
+```
+https://github.com/yarradev/yarradev-board/issues/new
+```
+
+Include:
+- What you were doing (loop pass, card state, edge)
+- What happened vs. what you expected
+- Relevant output (stdout of the failing act script, conductor log, board response)
+- Plugin version (`/plugin list` shows installed plugins and versions)
+
 ## Scope and what's next
 
 **Shipped** — the orchestrator skill + `designer`/`developer`/`tester` + `security-advisor` + `releaser`

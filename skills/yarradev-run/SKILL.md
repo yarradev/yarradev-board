@@ -372,6 +372,7 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
 
 ## Discipline & safety
 - **One subagent per card per pass.** A card advances at most one stage per pass; the next pass
+- **Plugin bugs are not your job to fix.** If a script misbehaves (unexpected output shape, missing fields, crash), log it and escalate — do not silently work around it. Report it at https://github.com/yarradev/yarradev-board/issues/new so it gets fixed at the source.
   re-reconciles. `maxCardsPerPass:1` keeps it single-threaded.
 - **The loop is single-threaded — do not re-enter while a pass is in flight.** Even if `/loop`'s
   interval is shorter than a pass, an overlap is safe (the second CLAIM is fenced 409 → skipped) —
