@@ -204,14 +204,16 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
       leg) → keep **`gen`** (`ok:false` → skip). Thread `gen` **verbatim** into the act you post and into
       CLEAR_LEASE; never reuse a gen across passes.
    2. **DISPATCH one subagent** in a **tmux pane** via the dispatch wrapper:
-      a. **Write the subagent prompt** to `/tmp/yarradev-prompt-<cardId>.txt`. Content is the
-         SAME context object you'd pass to the Agent tool — `{ doName, cardId, state, to, role,
-         title }` plus any role-specific extras (mode, respawn, deploy commands, advisor context,
-         etc.), formatted as a clear instruction for the subagent. **Include the card's existing
-         `notes[]`** (the prior-stage rationale — designer plan, reviewer findings — already on the
-         `getEnriched` read this pass) so the next owner reads forward context instead of re-deriving
-         it from scratch (GH #18). **Never include board tokens in the prompt file.**
-      b. **Run the dispatch:** `V=$(node $S/dispatch-and-wait.mjs <role> <cardId> /tmp/yarradev-prompt-<cardId>.txt)`
+      a. **Build the subagent prompt** with `P=$(node $S/build-prompt.mjs <role> <cardId> [--to <to>] [--extras-file <path>])`.
+         It fetches the card and writes `/tmp/yarradev-prompt-<cardId>.txt` (override with `--out`) containing
+         the dispatch context (`{doName, cardId, state, to, role, title}`) AND the card's existing `notes[]`
+         (prior-stage rationale — designer plan, reviewer findings) so the next owner reads forward context
+         instead of re-deriving it (GH #18); routing the file through the helper (not a hand-rolled heredoc)
+         also kills the shell-escaping footgun on titles/notes. `--to` defaults to `lifecycle[state].to` —
+         pass it explicitly for non-default edges (e.g. a REJECT's backward `to`). For role-specific extras
+         (deploy commands, mode, advisor context), write them to a file and pass `--extras-file`. **The prompt
+         file must never contain board tokens** (the helper uses the token only for the fetch and writes none).
+      b. **Run the dispatch:** `V=$(node $S/dispatch-and-wait.mjs <role> <cardId> "$P")`
          - `dispatch-and-wait.mjs` wraps the user-local **async** `~/work/tools/yarradev-dispatch` tool and
            **blocks until the subagent's verdict is ready**: it dispatches (backgrounding `claude -p`), then
            polls the dispatch manifest (`~/.local/share/claude-bg/dispatch-manifest.jsonl`) for the matching
