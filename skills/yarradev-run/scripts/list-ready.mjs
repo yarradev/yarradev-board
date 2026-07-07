@@ -21,6 +21,10 @@
  */
 import { decide, assertLifecycleCoherent } from "./vendor/core.mjs";
 import { makeClient, loadConfig } from "./plugin-io.mjs";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { inFlightCardIds } from "./in-flight.mjs";
 
 /**
  * Resolve the priority of the root epic for a card. If the card IS an epic, its own
@@ -110,11 +114,30 @@ const sorted = [...enriched.values()].sort((a, b) => {
   return (a.id ?? "").localeCompare(b.id ?? "");
 });
 
+// In-flight dispatch filter (GH #27): a long subagent outlives the lease (lease-TTL expiry bumps
+// current_gen, so dispatch-and-wait times out near the TTL and the conductor CLEAR_LEASEs). Without this,
+// the next pass reclaims + re-dispatches the card while the ORIGINAL subagent is still running → duplicate.
+// Skip cards whose latest dispatch is pending with no matching done and is recent; re-dispatchable once
+// the subagent finishes (done) or the entry goes stale (presumed dead).
+const staleS = Number(process.env.YDB_INFLIGHT_STALE_S ?? 7200);
+const manifestStateDir = process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share", "claude-bg");
+const manifestPath = join(manifestStateDir, "dispatch-manifest.jsonl");
+let inFlight = new Set();
+try {
+  if (existsSync(manifestPath)) inFlight = inFlightCardIds(readFileSync(manifestPath, "utf8"), now, staleS);
+} catch (e) {
+  process.stderr.write(`list-ready: dispatch manifest unreadable (${e.message}); in-flight filter disabled\n`);
+}
+
 // Phase 3: route each card through decide() in priority order
 for (const card of sorted) {
   const a = decide(card, cfg.lifecycle, policy, now);
   if (a.kind === "noop") {
     process.stderr.write(`skip ${card.id} (${card.state}): ${a.reason}\n`);
+    continue;
+  }
+  if (inFlight.has(card.id)) {
+    process.stderr.write(`skip ${card.id} (${card.state}): dispatch in-flight (subagent still running; not re-dispatched — GH #27)\n`);
     continue;
   }
   const line = { kind: a.kind, id: card.id, state: card.state, title: card.title };
