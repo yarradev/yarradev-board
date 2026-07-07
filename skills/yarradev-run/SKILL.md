@@ -88,6 +88,15 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
 ## Per-pass procedure (one /loop invocation)
 Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
 
+> **Async successor (v0.9.0, opt-in) — `pass.mjs`.** `node $S/pass.mjs` is the async-dispatch-and-reconcile
+> successor to the step 2/3 loop below: it **reconciles** landed verdicts (re-CLAIMing at verdict time, so a
+> long subagent's verdict isn't stranded by lease-TTL gen-bumps — fixes #27's recovery gap) and **fans out**
+> up to `pace.maxCardsPerPass` concurrent dispatches per pass (#28), with full verdict-routing parity. It is
+> **not yet the default loop** — it's pending a live-board dry-run; the step 2/3 prose below remains the live
+> conductor. To preview it standalone: `node $S/pass.mjs` (runs list-ready → reconcile → dispatch → exit).
+> The cutover (making it the default) is a deliberate, separate change. Spec:
+> `docs/superpowers/specs/2026-07-07-pass-mjs-async-reconcile-design.md`.
+
 0. **Check context-pressure flag.** If `/tmp/yarradev-prep-clear` exists, do NOT claim a new
    card this pass. If a card is currently in-flight (leased), finish it normally — post its act
    and CLEAR_LEASE. Then call `/exit`. If no card is in-flight, exit immediately. The wrapper
