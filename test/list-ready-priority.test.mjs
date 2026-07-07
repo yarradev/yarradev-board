@@ -235,7 +235,7 @@ test("list-ready skips cards whose deps_resolved is false; absent/true are emitt
 
   // priority order: blocked(1) → free(2) → unblocked(3); blocked must be filtered, the rest emitted.
   const cards = [
-    { id: "blocked-card", state: "dev", title: "Needs A first", type: "story", priority: 1, depends_on: ["card-a"], deps_resolved: false },
+    { id: "blocked-card", state: "dev", title: "Needs A first", type: "story", priority: 1, depends_on: ["card-a"], deps_resolved: false, unresolved_deps: [{ id: "card-a", reason: "not-done" }] },
     { id: "free-card", state: "dev", title: "Independent", type: "story", priority: 2 },
     { id: "unblocked-card", state: "dev", title: "A is done", type: "story", priority: 3, depends_on: ["card-a"], deps_resolved: true },
   ];
@@ -264,4 +264,6 @@ test("list-ready skips cards whose deps_resolved is false; absent/true are emitt
   const ids = stdout.trim().split("\n").filter(Boolean).map((l) => JSON.parse(l).id);
   assert.deepEqual(ids, ["free-card", "unblocked-card"], "deps_resolved=false skipped; absent/true emitted");
   assert.match(stderr, /skip blocked-card .*deps unresolved/);
+  // The board projects unresolved_deps (blockers + reason) — list-ready logs those, not the full depends_on.
+  assert.match(stderr, /card-a\(not-done\)/, "logs the unresolved dep id + reason");
 });
