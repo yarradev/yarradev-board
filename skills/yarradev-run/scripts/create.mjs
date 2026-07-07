@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * create.mjs <title...> [--id <id>] [--type story|epic] [--state <s>] [--parent <id>] [--priority <n>] [--lane fast|full] [--role <r>]
+ * create.mjs <title...> [--id <id>] [--type story|epic] [--state <s>] [--parent <id>] [--priority <n>] [--lane fast|full] [--depends-on <csv>] [--role <r>]
  *   — mint a new card via a gen-exempt CREATE (Phase 2b Task 6). This is the LIVE production path for
  *   epic decomposition (an analyst fans an epic out into child story cards): SKILL.md's "decomposed"
  *   branch calls this script once per child. reduce()'s "decomposed" case in orchestrator-core is NOT
@@ -17,6 +17,10 @@
  * --lane fast|full  convenience alias for --state: full→"spec" (design gate first), fast→"dev" (skip
  *                straight to development). --lane and --state are MUTUALLY EXCLUSIVE; if both are
  *                given, --lane WINS (documented, not an error) — --state is silently ignored.
+ * --depends-on <csv>  comma-separated dependency cardIds → data.depends_on (GH #32). The card is not
+ *                actionable until each dep reaches `done` (enforced by the board's projection once the
+ *                dependency model ships; until then this is stored on the act but not folded — a no-op).
+ *                A child may reference siblings created in the same decompose batch.
  * --role <r>     acting board identity for the CREATE post, default "analyst" (cockpit/human creates
  *                go through the dashboard, not this script).
  *
@@ -29,7 +33,7 @@ const LANE_STATE = { fast: "dev", full: "spec" };
 
 function parseArgs(argv) {
   const titleParts = [];
-  const opts = { id: undefined, type: undefined, state: undefined, parent: undefined, priority: undefined, lane: undefined, role: "analyst" };
+  const opts = { id: undefined, type: undefined, state: undefined, parent: undefined, priority: undefined, lane: undefined, dependsOn: undefined, role: "analyst" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     switch (a) {
@@ -55,6 +59,9 @@ function parseArgs(argv) {
       case "--lane":
         opts.lane = argv[++i];
         break;
+      case "--depends-on":
+        opts.dependsOn = argv[++i];
+        break;
       case "--role":
         opts.role = argv[++i];
         break;
@@ -69,7 +76,7 @@ function parseArgs(argv) {
 const opts = parseArgs(process.argv.slice(2));
 if (!opts.title) {
   console.error(
-    "usage: create.mjs <title...> [--id <id>] [--type story|epic] [--state <s>] [--parent <id>] [--priority <n>] [--lane fast|full] [--role <r>]",
+    "usage: create.mjs <title...> [--id <id>] [--type story|epic] [--state <s>] [--parent <id>] [--priority <n>] [--lane fast|full] [--depends-on <csv>] [--role <r>]",
   );
   process.exit(2);
 }
@@ -87,6 +94,12 @@ const defaultPriority = resolvedType === "epic" ? 50 : 100;
 const data = { type: resolvedType, title: opts.title, priority: opts.priority ?? defaultPriority };
 if (state) data.state = state;
 if (opts.parent) data.parent_id = opts.parent;
+// depends_on: CSV → trimmed, de-duped, non-empty array. Forward-compatible — the board stores it on the
+// act now and folds it into item.depends_on once the dependency model ships (GH #32).
+if (opts.dependsOn) {
+  const deps = [...new Set(opts.dependsOn.split(",").map((s) => s.trim()).filter(Boolean))];
+  if (deps.length) data.depends_on = deps;
+}
 
 const client = makeClient({ role: opts.role });
 const r = await client.create(id, data);

@@ -140,6 +140,15 @@ for (const card of sorted) {
     process.stderr.write(`skip ${card.id} (${card.state}): dispatch in-flight (subagent still running; not re-dispatched — GH #27)\n`);
     continue;
   }
+  // Dependency gate (GH #32): a card whose deps aren't resolved (the board's deps_resolved projection)
+  // is not actionable until each dep reaches `done`. Backward-compatible — a card with the field absent
+  // (older board, pre-deploy) is treated as resolved (undefined !== false), so this is a no-op until the
+  // dependency model ships.
+  if (card.deps_resolved === false) {
+    const deps = Array.isArray(card.depends_on) ? card.depends_on : [];
+    process.stderr.write(`skip ${card.id} (${card.state}): deps unresolved — blocked on [${deps.join(", ")}] (GH #32)\n`);
+    continue;
+  }
   const line = { kind: a.kind, id: card.id, state: card.state, title: card.title };
   if (a.role) line.role = a.role;
   if (a.to) line.to = a.to;
