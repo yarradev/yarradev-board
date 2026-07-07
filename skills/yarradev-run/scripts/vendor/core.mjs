@@ -1,7 +1,17 @@
 // GENERATED from @yarradev/orchestrator-core — do not edit; run `pnpm --filter @yarradev/orchestrator-core build`
 
 // src/verdict.ts
-var STATUSES = /* @__PURE__ */ new Set(["advance", "reject", "submitted", "question", "error", "veto", "hold", "advice", "clean"]);
+var STATUSES = /* @__PURE__ */ new Set([
+  "advance",
+  "reject",
+  "submitted",
+  "question",
+  "error",
+  "veto",
+  "hold",
+  "advice",
+  "clean"
+]);
 function parseSpawn(raw) {
   if (!Array.isArray(raw)) return [];
   const out = [];
@@ -34,7 +44,8 @@ function parseVerdict(text) {
   if (raw == null || typeof raw !== "object") return err("verdict is not an object");
   const o = raw;
   const status = o.status;
-  if (typeof status !== "string" || !STATUSES.has(status)) return err(`unknown verdict status: ${String(status)}`);
+  if (typeof status !== "string" || !STATUSES.has(status))
+    return err(`unknown verdict status: ${String(status)}`);
   const reason = typeof o.reason === "string" ? { reason: o.reason } : {};
   switch (status) {
     case "advance":
@@ -44,7 +55,11 @@ function parseVerdict(text) {
       const ev = o.evidence;
       if (!ev || typeof ev.repo !== "string" || typeof ev.head !== "string" || typeof ev.pr_number !== "number")
         return err("submitted verdict missing evidence{repo,pr_number,head}");
-      return { status, evidence: { repo: ev.repo, prNumber: ev.pr_number, head: ev.head }, ...reason };
+      return {
+        status,
+        evidence: { repo: ev.repo, prNumber: ev.pr_number, head: ev.head },
+        ...reason
+      };
     }
     case "question":
       if (typeof o.category !== "string") return err("question verdict missing category");
@@ -54,10 +69,12 @@ function parseVerdict(text) {
     case "veto":
     case "hold":
     case "clean":
-      if (typeof o.role !== "string" || typeof o.head !== "string") return err(`${status} verdict missing role/head`);
+      if (typeof o.role !== "string" || typeof o.head !== "string")
+        return err(`${status} verdict missing role/head`);
       return { status, role: o.role, head: o.head, ...reason };
     case "advice": {
-      if (typeof o.role !== "string" || typeof o.head !== "string") return err(`${status} verdict missing role/head`);
+      if (typeof o.role !== "string" || typeof o.head !== "string")
+        return err(`${status} verdict missing role/head`);
       const spawn = parseSpawn(o.spawn);
       return { status, role: o.role, head: o.head, ...reason, ...spawn.length ? { spawn } : {} };
     }
@@ -104,10 +121,14 @@ function assertLifecycleCoherent(lifecycle, machine) {
     if (!hasEdge) missingRejectEdges.push(`${state}->${def.rejectTo}`);
   }
   if (missingRejectEdges.length > 0) {
-    problems.push(`missing REJECT edge(s) in machine.transitions: [${missingRejectEdges.join(", ")}]`);
+    problems.push(
+      `missing REJECT edge(s) in machine.transitions: [${missingRejectEdges.join(", ")}]`
+    );
   }
   if (problems.length > 0) {
-    throw new Error(`assertLifecycleCoherent: lifecycle disagrees with GET /config machine \u2014 ${problems.join("; ")}`);
+    throw new Error(
+      `assertLifecycleCoherent: lifecycle disagrees with GET /config machine \u2014 ${problems.join("; ")}`
+    );
   }
 }
 
@@ -125,9 +146,15 @@ function decide(card, lifecycle, _policy, nowMs) {
   if (st.to == null) return { kind: "noop", reason: "terminal" };
   const transitions = card.transitions_count ?? 0;
   if (transitions >= DEFAULT_BUDGETS.transition_budget)
-    return { kind: "escalate", reason: `transition-budget (${transitions}/${DEFAULT_BUDGETS.transition_budget})` };
+    return {
+      kind: "escalate",
+      reason: `transition-budget (${transitions}/${DEFAULT_BUDGETS.transition_budget})`
+    };
   if (card.blocked && card.open_questions.length === 0)
-    return { kind: "escalate", reason: "board-drift: blocked with no open question (would park forever)" };
+    return {
+      kind: "escalate",
+      reason: "board-drift: blocked with no open question (would park forever)"
+    };
   if (card.blocked) {
     if (card.open_questions.some((q) => q.deadline_ts != null && q.deadline_ts <= nowMs))
       return { kind: "escalate", reason: "blocked: decision deadline passed" };
@@ -138,7 +165,10 @@ function decide(card, lifecycle, _policy, nowMs) {
   if (card.open_questions.length > 0) return { kind: "work", role: st.owner, to: st.to };
   if (st.gate === "barrier") {
     if (card.children_total === 0)
-      return { kind: "escalate", reason: "fan-in barrier with 0 child stories (decompose produced none?)" };
+      return {
+        kind: "escalate",
+        reason: "fan-in barrier with 0 child stories (decompose produced none?)"
+      };
     if (card.children_done >= card.children_total)
       return promote(st, `fan-in: all ${card.children_total} children done`);
     return { kind: "noop", reason: `fan-in ${card.children_done}/${card.children_total}` };
@@ -157,7 +187,8 @@ function decide(card, lifecycle, _policy, nowMs) {
     if (ci === "failure") {
       if (leased(card, nowMs)) return { kind: "noop", reason: "leased" };
       const since = card.parked_since_ts ?? nowMs;
-      if (nowMs - since > DEFAULT_BUDGETS.respawn_window_ms) return { kind: "escalate", reason: "ci-stalled" };
+      if (nowMs - since > DEFAULT_BUDGETS.respawn_window_ms)
+        return { kind: "escalate", reason: "ci-stalled" };
       return { kind: "respawn", role: st.owner };
     }
     return { kind: "noop", reason: `ci-${ci}` };
@@ -197,14 +228,18 @@ function reduce(verdict, card, lifecycle) {
     case "advance": {
       if (!st?.to) return escalate(card, `advance from ${card.state} but it has no forward edge`);
       if (verdict.to && verdict.to !== st.to) {
-        return escalate(card, `MOVE names to-stage:${verdict.to} but ${card.state}'s only forward edge is \u2192${st.to}`);
+        return escalate(
+          card,
+          `MOVE names to-stage:${verdict.to} but ${card.state}'s only forward edge is \u2192${st.to}`
+        );
       }
       return [{ type: "MOVE", item_id: card.id, gen: card.current_gen, data: { to: st.to } }];
     }
     case "reject": {
       const to = verdict.to;
       const validBackEdge = to != null && (st?.rejectTo != null ? to === st.rejectTo : lifecycle[to]?.to === card.state);
-      if (!validBackEdge) return escalate(card, `REJECT on undefined backward edge ${card.state}->${to ?? "?"}`);
+      if (!validBackEdge)
+        return escalate(card, `REJECT on undefined backward edge ${card.state}->${to ?? "?"}`);
       return [{ type: "REJECT", item_id: card.id, gen: card.current_gen, data: { to } }];
     }
     case "submitted": {
@@ -213,13 +248,31 @@ function reduce(verdict, card, lifecycle) {
       return card.linked_head_sha == null ? [{ type: "LINK_PR", item_id: card.id, gen: card.current_gen, data }] : [{ type: "PUSH", item_id: card.id, gen: card.current_gen, data }];
     }
     case "question":
-      return [{ type: "ASK", item_id: card.id, data: { cat: verdict.category, text: verdict.reason ?? "" } }];
+      return [
+        {
+          type: "ASK",
+          item_id: card.id,
+          data: { cat: verdict.category, text: verdict.reason ?? "" }
+        }
+      ];
     case "error":
       return escalate(card, `worker error: ${verdict.reason ?? "unspecified"}`);
     case "veto":
-      return [{ type: "VETO", item_id: card.id, data: { role: verdict.role, head: verdict.head, reason: verdict.reason ?? "" } }];
+      return [
+        {
+          type: "VETO",
+          item_id: card.id,
+          data: { role: verdict.role, head: verdict.head, reason: verdict.reason ?? "" }
+        }
+      ];
     case "hold":
-      return [{ type: "HOLD", item_id: card.id, data: { role: verdict.role, head: verdict.head, reason: verdict.reason ?? "" } }];
+      return [
+        {
+          type: "HOLD",
+          item_id: card.id,
+          data: { role: verdict.role, head: verdict.head, reason: verdict.reason ?? "" }
+        }
+      ];
     case "advice":
     case "clean": {
       const advice = {
@@ -234,16 +287,25 @@ function reduce(verdict, card, lifecycle) {
       const acts = [advice];
       for (const bug of kept) {
         const id = bugCardId(bug.fingerprint);
-        acts.push({ type: "CREATE", item_id: id, data: { type: "bug", title: bug.title, state: "dev", parent_id: card.id } });
+        acts.push({
+          type: "CREATE",
+          item_id: id,
+          data: { type: "bug", title: bug.title, state: "dev", parent_id: card.id }
+        });
         if (bug.note) acts.push({ type: "NOTE", item_id: id, data: { text: bug.note } });
       }
       if (dropped > 0) {
-        acts.push({ type: "NOTE", item_id: card.id, data: { text: `${dropped} spawn entries dropped (cap ${MAX_SPAWN})` } });
+        acts.push({
+          type: "NOTE",
+          item_id: card.id,
+          data: { text: `${dropped} spawn entries dropped (cap ${MAX_SPAWN})` }
+        });
       }
       return acts;
     }
     case "decomposed": {
-      if (!st?.to) return escalate(card, `decomposed from ${card.state} but it has no forward edge`);
+      if (!st?.to)
+        return escalate(card, `decomposed from ${card.state} but it has no forward edge`);
       if (verdict.to !== st.to) {
         return escalate(
           card,
@@ -256,11 +318,17 @@ function reduce(verdict, card, lifecycle) {
         item_id: "",
         data: { type: "story", title: c.title, state: c.state ?? "backlog", parent_id: card.id }
       }));
-      return [...creates, { type: "MOVE", item_id: card.id, gen: card.current_gen, data: { to: verdict.to } }];
+      return [
+        ...creates,
+        { type: "MOVE", item_id: card.id, gen: card.current_gen, data: { to: verdict.to } }
+      ];
     }
     default: {
       const _exhaustive = verdict;
-      return escalate(card, `reduce: unhandled verdict (${_exhaustive.status})`);
+      return escalate(
+        card,
+        `reduce: unhandled verdict (${_exhaustive.status})`
+      );
     }
   }
 }
@@ -293,7 +361,9 @@ var BoardClient = class {
   async getJson(suffix) {
     const res = await this.fetchImpl(this.url(suffix), { headers: this.headers() });
     if (!res.ok) {
-      console.error(`[boardClient] GET ${suffix} \u2192 HTTP ${res.status} ${res.statusText || ""} (returning null)`.trimEnd());
+      console.error(
+        `[boardClient] GET ${suffix} \u2192 HTTP ${res.status} ${res.statusText || ""} (returning null)`.trimEnd()
+      );
       return null;
     }
     return await res.json();
@@ -304,9 +374,7 @@ var BoardClient = class {
     params.set("limit", String(opts.limit ?? 200));
     if (opts.state) params.set("state", opts.state);
     if (opts.after) params.set("after", opts.after);
-    const body = await this.getJson(
-      `/cards?${params.toString()}`
-    );
+    const body = await this.getJson(`/cards?${params.toString()}`);
     if (body == null) return [];
     return Array.isArray(body) ? body : body.items ?? [];
   }
@@ -318,7 +386,10 @@ var BoardClient = class {
   }
   async acts(after = 0, limit = 100) {
     const params = new URLSearchParams({ after: String(after), limit: String(limit) });
-    return await this.getJson(`/acts?${params.toString()}`) ?? { acts: [], nextAfterSeq: null };
+    return await this.getJson(`/acts?${params.toString()}`) ?? {
+      acts: [],
+      nextAfterSeq: null
+    };
   }
   // ── write core ─────────────────────────────────────────────────────────────
   body(a) {
@@ -384,10 +455,18 @@ var BoardClient = class {
   // Security-advisor verdicts (gen-exempt). Sets veto_held/hold_open, parking the card until an
   // accountable human clears it (clearVeto/clearHold below).
   veto(id, reason = "", head = null) {
-    return this.act({ type: "VETO", item_id: id, data: { role: "security-advisor", reason, head } });
+    return this.act({
+      type: "VETO",
+      item_id: id,
+      data: { role: "security-advisor", reason, head }
+    });
   }
   hold(id, reason = "", head = null) {
-    return this.act({ type: "HOLD", item_id: id, data: { role: "security-advisor", reason, head } });
+    return this.act({
+      type: "HOLD",
+      item_id: id,
+      data: { role: "security-advisor", reason, head }
+    });
   }
   // Non-binding advisor review (gen-exempt). Records a CLEAN review at data.reviewed_head so the board's
   // advisor_clear gate goes non-vacuous and the card advances — a clean/advice verdict does NOT park it.
