@@ -243,3 +243,33 @@ test("create.mjs --priority with non-integer exits 2", async () => {
   assert.match(stderr, /priority/);
   assert.equal(requests.length, 0, "must not hit the network on a usage error");
 });
+
+test("create.mjs --depends-on CSV → data.depends_on (parsed, trimmed, deduped) (GH #32)", async () => {
+  const { server, requests } = startStub();
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address();
+
+  await run(["Worker pool", "--parent", "epic-1", "--depends-on", " card-a , card-b,card-a ,,"], {
+    YDB_API_BASE: `http://127.0.0.1:${port}`,
+    YDB_DO_NAME: "create-cli-test",
+    YDB_TOKEN: "test.token",
+  });
+  await new Promise((r) => server.close(r));
+
+  assert.deepEqual(requests[0].body.data.depends_on, ["card-a", "card-b"]);
+});
+
+test("create.mjs omits depends_on when --depends-on is not given (GH #32)", async () => {
+  const { server, requests } = startStub();
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address();
+
+  await run(["Independent child", "--parent", "epic-1"], {
+    YDB_API_BASE: `http://127.0.0.1:${port}`,
+    YDB_DO_NAME: "create-cli-test",
+    YDB_TOKEN: "test.token",
+  });
+  await new Promise((r) => server.close(r));
+
+  assert.equal("depends_on" in requests[0].body.data, false, "an independent child must not carry depends_on");
+});

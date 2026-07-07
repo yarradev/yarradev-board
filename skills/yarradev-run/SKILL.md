@@ -369,13 +369,15 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
         often → run `node $S/escalate.mjs <id> "bounce budget: <edge>"` (park for a human) instead of
         re-looping.
       - **analyst `status:"decomposed"`** (`epic_decompose`, `evidence`-free — the fields are top-level:
-        `to`, `children:[{title}]`, `summary`) — a **zero-length `children` array is not a valid
+        `to`, `children:[{title, depends_on?}]`, `summary`) — a **zero-length `children` array is not a valid
         decomposition**: treat it exactly like `status:"question"` below (escalate/park), mirroring
         `reduce()`'s escalate-on-0-children. Otherwise, derive `<epicId>`/`<gen>`/`<to>` from this pass's
         state (never hardcode a stage name) and:
         1. For each `children[i]`, in order: `node $S/create.mjs "<children[i].title>" --parent <epicId>`
            (mints a child story card under the epic; the board bumps the epic's `children_total` per
-           CREATE). A CREATE failure mid-loop is **not** silently swallowed — log it and stop issuing
+           CREATE), appending `--depends-on "<children[i].depends_on joined with ','>"` when the child
+           carries `depends_on` (GH #32 — the card won't be actionable until each dep reaches `done`).
+           A CREATE failure mid-loop is **not** silently swallowed — log it and stop issuing
            further CREATEs for this card this pass; the next pass re-dispatches the analyst (still at
            `epic_decompose`, since the epic hasn't moved) and it can re-decompose from scratch.
         2. Then `node $S/move.mjs <epicId> <gen> <to> analyst` — advances the epic to `<to>` (the barrier

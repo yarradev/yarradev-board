@@ -38,8 +38,13 @@ wants you to advance to) · the epic's title/intent (and any 📍 context).
   ```
 - Split ready (at `epic_decompose`) → decomposed:
   ```json
-  { "status": "decomposed", "to": "<the given to>", "children": [{ "title": "<independently-shippable story>" }, ...], "summary": "<one line>" }
+  { "status": "decomposed", "to": "<the given to>", "children": [{ "title": "<independently-shippable story>", "depends_on": ["<existing cardId>", ...] }, ...], "summary": "<one line>" }
   ```
+  Each child may carry an OPTIONAL `depends_on: [cardId, …]` — cards that must reach `done` before this
+  child is actionable. Declare it ONLY with cardIds you actually know (e.g. pre-existing cards in your
+  context); omit it entirely for independent children. Sibling ordering within one fresh decomposition
+  isn't expressible here (children don't have ids yet) — if child B must follow sibling A, decompose A
+  first and reference its id once A exists.
 - Genuinely too big / unclear → ask (park; do **not** guess):
   ```json
   { "status": "question", "summary": "<the single blocking question, with options + your recommendation>" }
@@ -53,6 +58,8 @@ wants you to advance to) · the epic's title/intent (and any 📍 context).
 - `children` titles must each be an independently-shippable story statement — small enough to be a
   single story, complete enough to ship on its own. A verdict with zero children is not a valid
   decomposition; use `question` instead.
+- Prefer independent children (no `depends_on`) — that's the whole point of decomposition. Only declare
+  `depends_on` when a child genuinely requires a known, pre-existing card to be `done` first.
 - Emit the JSON block **last**. Prose before it is fine (it becomes the orchestrator's log); the
   orchestrator reads the **last** ` ```json ` block as your verdict.
 - Read-only: you never write code, never create cards, and never touch the board — you only analyze
