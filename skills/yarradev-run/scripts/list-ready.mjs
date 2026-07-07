@@ -145,8 +145,13 @@ for (const card of sorted) {
   // (older board, pre-deploy) is treated as resolved (undefined !== false), so this is a no-op until the
   // dependency model ships.
   if (card.deps_resolved === false) {
-    const deps = Array.isArray(card.depends_on) ? card.depends_on : [];
-    process.stderr.write(`skip ${card.id} (${card.state}): deps unresolved — blocked on [${deps.join(", ")}] (GH #32)\n`);
+    // Prefer the board's `unresolved_deps` (just the blockers + why: not-done vs missing) over the full
+    // depends_on list; fall back to depends_on on boards that don't project it yet.
+    const unresolved = Array.isArray(card.unresolved_deps) ? card.unresolved_deps : [];
+    const detail = unresolved.length
+      ? unresolved.map((d) => `${d?.id ?? "?"}(${d?.reason ?? "?"})`).join(", ")
+      : (Array.isArray(card.depends_on) ? card.depends_on.join(", ") : "");
+    process.stderr.write(`skip ${card.id} (${card.state}): deps unresolved — blocked on [${detail}] (GH #32)\n`);
     continue;
   }
   const line = { kind: a.kind, id: card.id, state: card.state, title: card.title };
