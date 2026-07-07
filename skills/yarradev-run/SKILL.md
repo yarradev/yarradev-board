@@ -385,6 +385,12 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
         - `kind:"respawn"` (fix) → `node $S/push.mjs <id> <gen> <repo> <pr_number> <head>`.
         - **Do NOT MOVE** — the card waits for CI; a later `advance` pass moves it. (A PUSH with no prior
           LINK_PR strands CI, so the work→LINK_PR / respawn→PUSH split is load-bearing.)
+        - **Recover stranded CI** (right after the LINK_PR/PUSH): `node $S/reattach-ci.mjs <id> <repo>
+          <pr_number> <head>`. CI webhooks frequently complete BEFORE the pr_link row exists, so the board
+          drops them and `ci_rollup` stalls at `absent` → card hangs at `dev` (GH #21). This re-triggers
+          the head's CI run when GitHub shows completed checks the board never recorded, so a fresh
+          completion webhook lands against the now-existing pr_link. Best-effort — no-ops if CI already
+          landed or is still pending, and exits 0 on any gh failure (never blocks the pass).
         - **Advisor review** (stages with a configured advisor): after the LINK_PR/PUSH, dispatch the
           STAGE's configured advisor via the same dispatch pattern as step 2:
           write the advisor prompt to `/tmp/yarradev-prompt-<cardId>.txt` with
