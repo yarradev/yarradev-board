@@ -55,6 +55,25 @@ export function manifestHasDone(manifestContent, verdictPath) {
   return false;
 }
 
+/**
+ * Strip board bearer tokens (YDB_TOKEN / YDB_TOKEN_<ROLE>) from an env object before it reaches a
+ * dispatched subagent. Defense-in-depth (GH #25): under the documented inline-per-call usage the wrapper's
+ * env is already clean, but if a user EXPORTS YDB_TOKEN* (easy to do by accident) spawnSync would otherwise
+ * inherit them into yarradev-dispatch → claude -p → the subagent, where a prompt-injected role could
+ * `printenv` them and forge board acts. Subagents never need a board token (the conductor posts every act),
+ * so dropping them is always safe. Leaves PATH/HOME and role credentials (CLOUDFLARE_API_TOKEN,
+ * GITHUB_TOKEN, …) the subagent legitimately needs intact. Pure for unit testing.
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {NodeJS.ProcessEnv} a sanitized copy
+ */
+export function sanitizeEnv(env) {
+  const clean = { ...env };
+  for (const k of Object.keys(clean)) {
+    if (/^YDB_TOKEN/i.test(k)) delete clean[k];
+  }
+  return clean;
+}
+
 // CLI: only execute when invoked directly (`node dispatch-and-wait.mjs <role> <cardId> <promptFile>`), NOT
 // on import — the unit test imports manifestHasDone and must not trigger a real dispatch.
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -71,7 +90,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
   // 1. Dispatch (async) — capture the verdict file path the tool prints on stdout. Non-zero / null status =
   //    true dispatch failure (tool missing, tmux+background both unavailable, prompt file unreadable).
-  const dispatched = spawnSync(tool, [role, cardId, promptFile], { encoding: "utf8" });
+  // Sanitize the env handed to the subagent: strip YDB_TOKEN* so a prompt-injected role can't `printenv`
+  // a board bearer and forge acts (GH #25). No-op under inline-per-call usage; load-bearing if exported.
+  const dispatched = spawnSync(tool, [role, cardId, promptFile], { encoding: "utf8", env: sanitizeEnv(process.env) });
   if (dispatched.status !== 0) {
     console.error(`dispatch-and-wait: yarradev-dispatch exited ${dispatched.status}${dispatched.stderr ? ` — ${dispatched.stderr.trim()}` : ""}`);
     process.exit(1);

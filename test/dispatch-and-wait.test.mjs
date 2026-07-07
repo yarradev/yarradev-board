@@ -6,7 +6,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { manifestHasDone } from "../skills/yarradev-run/scripts/dispatch-and-wait.mjs";
+import { manifestHasDone, sanitizeEnv } from "../skills/yarradev-run/scripts/dispatch-and-wait.mjs";
 
 const VP = "/tmp/yarradev-dispatch/designer-card-1-123-456/verdict.txt";
 
@@ -45,4 +45,50 @@ test("manifestHasDone: skips malformed lines without crashing", () => {
 test("manifestHasDone: ignores a `done` whose verdictPath differs only by trailing newline/space", () => {
   const manifest = `{"status":"done","verdictPath":"${VP} ","role":"designer"}`;
   assert.equal(manifestHasDone(manifest, VP), false, "exact verdictPath match required");
+});
+
+test("sanitizeEnv: strips every YDB_TOKEN* key, leaves everything else (GH #25)", () => {
+  const out = sanitizeEnv({
+    PATH: "/usr/bin",
+    HOME: "/Users/x",
+    YDB_TOKEN: "shaped.<secret>",
+    YDB_TOKEN_ORCHESTRATOR: "orch.<secret>",
+    YDB_TOKEN_DEVELOPER: "dev.<secret>",
+    YDB_TOKEN_SECURITY_ADVISOR: "sec.<secret>",
+    CLOUDFLARE_API_TOKEN: "cf.<secret>",
+    GITHUB_TOKEN: "gh.<secret>",
+    YDB_API_BASE: "https://board.example",
+    YDB_DO_NAME: "acme:main",
+  });
+  assert.equal(out.YDB_TOKEN, undefined, "shared YDB_TOKEN stripped");
+  assert.equal(out.YDB_TOKEN_ORCHESTRATOR, undefined, "per-role orchestrator token stripped");
+  assert.equal(out.YDB_TOKEN_DEVELOPER, undefined, "per-role developer token stripped");
+  assert.equal(out.YDB_TOKEN_SECURITY_ADVISOR, undefined, "per-role advisor token stripped");
+  assert.equal(out.PATH, "/usr/bin", "PATH preserved");
+  assert.equal(out.HOME, "/Users/x", "HOME preserved");
+  assert.equal(out.CLOUDFLARE_API_TOKEN, "cf.<secret>", "role CF credential preserved (devops needs it)");
+  assert.equal(out.GITHUB_TOKEN, "gh.<secret>", "GitHub credential preserved");
+  assert.equal(out.YDB_API_BASE, "https://board.example", "non-secret board config preserved");
+  assert.equal(out.YDB_DO_NAME, "acme:main", "non-secret board config preserved");
+});
+
+test("sanitizeEnv: does not mutate the input env", () => {
+  const input = { PATH: "/usr/bin", YDB_TOKEN: "secret", YDB_TOKEN_RELEASER: "r" };
+  const out = sanitizeEnv(input);
+  assert.equal(input.YDB_TOKEN, "secret", "input untouched");
+  assert.equal(input.YDB_TOKEN_RELEASER, "r", "input untouched");
+  assert.equal(out.YDB_TOKEN, undefined);
+  assert.notEqual(out, input, "returns a distinct copy");
+});
+
+test("sanitizeEnv: env with no YDB_TOKEN keys is returned unchanged (content-wise)", () => {
+  const out = sanitizeEnv({ PATH: "/usr/bin", HOME: "/h" });
+  assert.deepEqual(out, { PATH: "/usr/bin", HOME: "/h" });
+});
+
+test("sanitizeEnv: case-insensitive strip (catches accidental lowercase export)", () => {
+  const out = sanitizeEnv({ ydb_token: "secret", YDB_TOKEN_DEVELOPER: "d", PATH: "/x" });
+  assert.equal(out.ydb_token, undefined);
+  assert.equal(out.YDB_TOKEN_DEVELOPER, undefined);
+  assert.equal(out.PATH, "/x");
 });
