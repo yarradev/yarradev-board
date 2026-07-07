@@ -421,6 +421,13 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
 ## Discipline & safety
 - **One subagent per card per pass.** A card advances at most one stage per pass; the next pass
   re-reconciles. `maxCardsPerPass:1` keeps it single-threaded.
+- **Never re-dispatch a card whose subagent is still running.** A long stage owner can outlast the lease
+  (lease-TTL expiry bumps `current_gen`, so `dispatch-and-wait` times out near the TTL and you CLEAR_LEASE).
+  `list-ready` then **skips** the card while its dispatch is `pending` with no `done` in the manifest
+  (GH #27) — do not bypass that and reclaim it: the original subagent is still editing the worktree, and a
+  second one would conflict. The card becomes reclaimable again once the subagent finishes (`done`) or the
+  entry goes stale (~2h, `YDB_INFLIGHT_STALE_S`). (Recovering the timed-out verdict itself needs
+  async-reconcile — GH #28.)
 - **Process epics in priority order; finish one before starting the next.** `list-ready.mjs` emits
   cards sorted by (epic priority, card priority, id). Process the first actionable card in that
   order. Do not pick up a story from a different epic while the current epic has ready work.
@@ -438,7 +445,7 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
 | Step | Failure | Do |
 |---|---|---|
 | CLAIM | 409 fenced (stale gen / already leased) | log `claim-failed`, skip card; next pass re-reconciles |
-| Dispatch | `dispatch-and-wait.mjs` non-zero exit (tool missing / dispatch failed / poll timeout) / subagent finished with no JSON verdict in `$V` | post nothing; **CLEAR_LEASE**; retry next pass. (An empty `$V` mid-run is NOT this — the wrapper blocks until the verdict is ready, so an empty file after it returns means the subagent produced no verdict, a real failure.) |
+| Dispatch | `dispatch-and-wait.mjs` non-zero exit (tool missing / dispatch failed / poll timeout) / subagent finished with no JSON verdict in `$V` | post nothing; **CLEAR_LEASE**; retry next pass. A poll-timeout (long subagent outlasted the lease) does NOT re-dispatch immediately — `list-ready` skips the card while its dispatch is `pending` (GH #27); it becomes reclaimable once the subagent finishes or the entry goes stale. (An empty `$V` after the wrapper returns is a real failure — the subagent produced no verdict.) |
 | MOVE/REJECT | 409 fenced (lease/TTL expired mid-work) | **CLEAR_LEASE**; redo next pass |
 | MOVE/REJECT/LINK_PR/PUSH | 422 gate_blocked / bad_act | **CLEAR_LEASE**; `decide` re-derives next pass (gate flipped → wait/respawn; budget → escalate; bounce → escalate). `blocked_by` is surfaced so you can branch on the failing predicate. |
 | CLEAR_LEASE | any | best-effort; the lease expires at its TTL anyway |
