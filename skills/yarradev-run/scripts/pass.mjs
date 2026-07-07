@@ -580,8 +580,9 @@ export async function reconcileVerdicts({
  * epic-done signal are deferred to the SKILL.md wiring task.
  * @returns {Promise<{acts: Array, outcome: string, error?: Error}>}
  */
-export async function applySyncAction(action, { run, ttlS = 1800 }) {
+export async function applySyncAction(action, { run, ttlS = 1800, card = null, signalEpicDone = null } = {}) {
   const acts = [];
+  const note = (reason) => { acts.push({ note: reason }); };
   const call = async (script, args) => {
     const result = await run(script, args);
     acts.push({ script, args, result });
@@ -594,9 +595,25 @@ export async function applySyncAction(action, { run, ttlS = 1800 }) {
       await call("move.mjs", [action.id, claim.gen, action.to, action.role]);
       await call("clear-lease.mjs", [action.id, claim.gen]);
     } else if (action.kind === "promote") {
+      // MOVE at the card's CURRENT gen (no CLAIM — a bump would invalidate the gen-stamped GO / barrier
+      // facts). NOTE: autonomous release.mjs (the done→staging human-gate) is DEFERRED — staging→prod stays
+      // human-gated in pass.mjs for now (the safe default); port release.mjs + prod-rollout later.
       const args = [action.id, action.to];
       if (action.role) args.push(action.role); // barrier's promoteAs (e.g. analyst); omit → releaser default
-      await call("promote.mjs", args);
+      const res = await call("promote.mjs", args);
+      const bb = Array.isArray(res?.blocked_by) ? res.blocked_by : [];
+      if (!res?.ok && res?.status === 422) {
+        if (bb.includes("human_go")) note("awaiting human GO (a byKind:human identity runs human-go.mjs)");
+        else if (bb.includes("all_children_terminal")) note("epic barrier: a child regressed after the snapshot — next pass re-derives");
+        else note(`promote 422 gate_blocked: [${bb.join(",")}] — next pass re-derives`);
+      }
+      // Epic completion: an epic barrier crossed into epic_done → write the signal so yarradev-loop restarts
+      // with clean context (mirrors SKILL.md's /tmp/yarradev-epic-done + /exit; pass.mjs is one pass, so it
+      // writes the file and exits 0 — the wrapper does the restart).
+      if (res?.ok && card?.type === "epic" && action.to === "epic_done" && typeof signalEpicDone === "function") {
+        signalEpicDone({ epicId: action.id, title: card?.title ?? "", storyCount: card?.children_total ?? 0 });
+        note("epic_done signal written");
+      }
     } else if (action.kind === "escalate") {
       await call("escalate.mjs", [action.id, action.reason ?? "escalated"]);
     }
@@ -736,6 +753,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const K = cfg.pace?.maxCardsPerPass ?? 1;
   const ttlS = cfg.pace?.claimTtlS ?? 1800;
 
+  // Context management (epic-context-clearing): if the prep-clear flag is set (by the yarradev-loop wrapper
+  // on CTX%≥60%, or by the pass-count fallback below), reconcile in-flight verdicts but do NOT claim/dispatch
+  // new cards — then exit so the wrapper restarts the session with clean context.
+  const PREP_CLEAR = "/tmp/yarradev-prep-clear";
+  const PASS_COUNT = "/tmp/yarradev-epic-pass-count";
+  const skipDispatch = existsSync(PREP_CLEAR);
+  if (skipDispatch) process.stderr.write("[pass] prep-clear set — reconciling in-flight only, no new dispatch\n");
+
   // Lazy-import makeClient (avoid pulling BoardClient at module top so pure-helper imports stay clean of fs).
   const { makeClient } = await import("./plugin-io.mjs");
   const client = makeClient({ role: "orchestrator" });
@@ -810,8 +835,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const syncActions = actions.filter((a) => !DISPATCH_KINDS.has(a.kind));
 
   // --- Phase 2a: sync kinds (advance/promote/escalate) — no dispatch, posted directly ---
+  const writeEpicDone = ({ epicId, title, storyCount }) => {
+    try {
+      writeFileSync("/tmp/yarradev-epic-done", JSON.stringify({ epicId, title, completedAt: new Date().toISOString(), storyCount, bugCount: 0 }));
+    } catch (e) {
+      process.stderr.write(`[pass] failed to write epic-done signal: ${e?.message ?? e}\n`);
+    }
+  };
   for (const action of syncActions) {
-    const res = await applySyncAction(action, { run, ttlS });
+    const card = action.kind === "promote" ? await getCard(action.id) : null; // epic-done detection
+    const res = await applySyncAction(action, { run, ttlS, card, signalEpicDone: writeEpicDone });
     process.stdout.write(JSON.stringify({ phase: "sync", kind: action.kind, id: action.id, ...res }) + "\n");
   }
 
@@ -841,19 +874,37 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     return cursor?.priority ?? 100;
   };
 
-  const dispatchOut = await dispatchNew({
-    cards: dispatchCards,
-    K,
-    epicOf,
-    run,
-    dispatch,
-    ttlS,
-    writeContext: (verdictPath, ctx) => {
-      mkdirSync(stateDir, { recursive: true });
-      appendFileSync(contextPath, JSON.stringify({ verdictPath, ctx, recordedAt: new Date().toISOString() }) + "\n");
-    },
-  });
-  process.stdout.write(JSON.stringify({ phase: "dispatch", ...dispatchOut }) + "\n");
+  if (skipDispatch) {
+    process.stdout.write(JSON.stringify({ phase: "dispatch", action: "skipped", reason: "prep-clear" }) + "\n");
+  } else {
+    const dispatchOut = await dispatchNew({
+      cards: dispatchCards,
+      K,
+      epicOf,
+      run,
+      dispatch,
+      ttlS,
+      writeContext: (verdictPath, ctx) => {
+        mkdirSync(stateDir, { recursive: true });
+        appendFileSync(contextPath, JSON.stringify({ verdictPath, ctx, recordedAt: new Date().toISOString() }) + "\n");
+      },
+    });
+    process.stdout.write(JSON.stringify({ phase: "dispatch", ...dispatchOut }) + "\n");
+
+    // Pass-count fallback (when statusline CTX% isn't available): ~3.3h at 5-min intervals → prep-clear,
+    // so the next pass reconciles-only and the wrapper restarts with clean context.
+    try {
+      const count = Number(readFileSync(PASS_COUNT, "utf8")) || 0;
+      const next = count + 1;
+      writeFileSync(PASS_COUNT, String(next));
+      if (next >= 40 && !existsSync(PREP_CLEAR)) {
+        writeFileSync(PREP_CLEAR, "");
+        process.stderr.write("[pass] pass-count reached 40 → wrote prep-clear (next pass reconciles-only + exits)\n");
+      }
+    } catch (e) {
+      process.stderr.write(`[pass] pass-count update failed: ${e?.message ?? e}\n`);
+    }
+  }
 
   process.exit(0);
 }

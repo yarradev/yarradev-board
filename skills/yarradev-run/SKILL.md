@@ -88,14 +88,15 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
 ## Per-pass procedure (one /loop invocation)
 Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
 
-> **Async successor (v0.9.0, opt-in) — `pass.mjs`.** `node $S/pass.mjs` is the async-dispatch-and-reconcile
-> successor to the step 2/3 loop below: it **reconciles** landed verdicts (re-CLAIMing at verdict time, so a
-> long subagent's verdict isn't stranded by lease-TTL gen-bumps — fixes #27's recovery gap) and **fans out**
-> up to `pace.maxCardsPerPass` concurrent dispatches per pass (#28), with full verdict-routing parity. It is
-> **not yet the default loop** — it's pending a live-board dry-run; the step 2/3 prose below remains the live
-> conductor. To preview it standalone: `node $S/pass.mjs` (runs list-ready → reconcile → dispatch → exit).
-> The cutover (making it the default) is a deliberate, separate change. Spec:
-> `docs/superpowers/specs/2026-07-07-pass-mjs-async-reconcile-design.md`.
+> **PRIMARY (v0.9.1 cutover) — run `node $S/pass.mjs` each pass.** `pass.mjs` is now the default conductor:
+> it **reconciles** landed verdicts (re-CLAIM at verdict time, so a long subagent's verdict isn't stranded by
+> lease-TTL gen-bumps — fixes #27's recovery gap), **fans out** ≤`pace.maxCardsPerPass` concurrent dispatches
+> (#28), routes every verdict with full parity, and handles the prep-clear check (step 0) + the 40-pass
+> counter (step 3) + the `epic_done` signal. **Fallback:** if `pass.mjs` is unavailable or hits an unexpected
+> error, the step-by-step loop below (steps 0–4) remains the manual procedure. The detailed steps below are
+> now the **parity reference** `pass.mjs` implements — audit them, don't execute them when `pass.mjs` runs.
+> Spec: `docs/superpowers/specs/2026-07-07-pass-mjs-async-reconcile-design.md`. **Known V1 gap:** autonomous
+> `release.mjs` on `done→staging` is not yet ported — staging→prod stays human-gated (the safe default).
 
 0. **Check context-pressure flag.** If `/tmp/yarradev-prep-clear` exists, do NOT claim a new
    card this pass. If a card is currently in-flight (leased), finish it normally — post its act
