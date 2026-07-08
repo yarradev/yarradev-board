@@ -233,8 +233,8 @@ test("routeVerdict: decomposed with zero-length children → escalate (treat as 
 
 // ---- decomposed: a CREATE failure mid-loop stops further CREATEs for this card ----
 
-test("routeVerdict: decomposed — a non-committed CREATE stops the loop (no further CREATEs, no move)", async () => {
-  const { acts } = await route({
+test("routeVerdict: decomposed — a non-committed CREATE stops the loop (no further CREATEs, no move), escalates (#60)", async () => {
+  const { acts, actFailed } = await route({
     verdict: { status: "decomposed", to: "epic_integrating", children: [{ title: "A" }, { title: "B" }] },
     ctx: { id: "epic-1", state: "epic_decompose", role: "analyst", to: "epic_integrating", gen: 2, type: "epic" },
     overrides: {
@@ -243,8 +243,13 @@ test("routeVerdict: decomposed — a non-committed CREATE stops the loop (no fur
       }),
     },
   });
-  // First CREATE attempted + failed → stop. Second CREATE never issued, MOVE never issued.
-  assert.deepEqual(acts, [["create.mjs", ["A", "--parent", "epic-1"]]]);
+  // First CREATE attempted + failed → stop. Second CREATE never issued, MOVE never issued. Partial
+  // decomposition is now surfaced + parked (#60) so the next pass doesn't blindly re-decompose duplicates.
+  assert.deepEqual(acts, [
+    ["create.mjs", ["A", "--parent", "epic-1"]],
+    ["escalate.mjs", ["epic-1", "decompose CREATE failed mid-loop (partial children) — parking to avoid re-decompose duplicates"]],
+  ]);
+  assert.ok(actFailed, "partial CREATE failure surfaced");
 });
 
 // ---- advisor advice + spawn[] : fingerprint → dedup → create → note -------------
@@ -465,10 +470,11 @@ test("routeVerdict: MOVE 422 advisor_clear → fire-and-forget advisor dispatch,
   assert.equal(advisorClear422, true);
 });
 
-test("routeVerdict: MOVE 422 with a NON-advisor_clear blocked_by → ordinary failure path (no advisor dispatch)", async () => {
+test("routeVerdict: MOVE 422 with a NON-advisor_clear blocked_by → ordinary failure path (no advisor dispatch), escalates (#58)", async () => {
   // Only advisor_clear triggers the async advisor reshape; any other predicate is an ordinary gate block
-  // (CLEAR_LEASE; decide re-derives next pass) — no dispatch.
-  const { acts, dispatches, advisorClear422 } = await route({
+  // (CLEAR_LEASE; decide re-derives next pass) — no dispatch, but it IS now a load-bearing act failure:
+  // surfaced (actFailed) AND escalated (parked), so it can't loop forever silently (#58).
+  const { acts, dispatches, advisorClear422, actFailed } = await route({
     verdict: { status: "advance" },
     ctx: { id: "c1", state: "dev", role: "developer", to: "test", gen: 3, kind: "work" },
     overrides: {
@@ -477,9 +483,13 @@ test("routeVerdict: MOVE 422 with a NON-advisor_clear blocked_by → ordinary fa
       }),
     },
   });
-  assert.deepEqual(acts, [["move.mjs", ["c1", 3, "test", "developer"]]]);
+  assert.deepEqual(acts, [
+    ["move.mjs", ["c1", 3, "test", "developer"]],
+    ["escalate.mjs", ["c1", "advance act failed (dev→test): gate_blocked"]],
+  ]);
   assert.deepEqual(dispatches, [], "non-advisor_clear 422 does NOT dispatch an advisor");
   assert.equal(advisorClear422, false);
+  assert.ok(actFailed, "act failure surfaced");
 });
 
 test("routeVerdict: MOVE 422 advisor_clear but state has NO configured advisor → no dispatch (inert)", async () => {
@@ -552,4 +562,75 @@ test("routeVerdict: decomposed barrier MOVE fails after CREATEs → actFailed + 
   assert.ok(r.actFailed, "barrier MOVE failure must set actFailed");
   assert.equal(r.actFailed.script, "move.mjs");
   assert.ok(r.acts.some(([s]) => s === "escalate.mjs"), "half-advanced epic must escalate");
+});
+
+test("routeVerdict: advance MOVE fail (non-advisor_clear) → actFailed AND escalate (#58)", async () => {
+  const r = await route({
+    verdict: { status: "advance" },
+    ctx: { id: "c1", to: "done", role: "tester", state: "test", gen: "1" },
+    overrides: { run: async (s) => (s === "move.mjs" ? { ok: false, status: 422, reason: "no edge" } : { ok: true }) },
+  });
+  assert.ok(r.actFailed, "actFailed set");
+  assert.ok(r.acts.some(([s]) => s === "escalate.mjs"), "advance failure now escalates (breaks the loop)");
+});
+
+test("routeVerdict: advance advisor_clear → still NO escalate, NO actFailed (regression)", async () => {
+  const r = await route({
+    verdict: { status: "advance" },
+    ctx: { id: "c1", to: "done", role: "tester", state: "test", gen: "1" },
+    overrides: { run: async (s) => (s === "move.mjs" ? { ok: false, outcome: "gate_blocked", blocked_by: ["advisor_clear"] } : { ok: true }) },
+  });
+  assert.equal(r.actFailed, null);
+  assert.ok(!r.acts.some(([s]) => s === "escalate.mjs"));
+});
+
+test("routeVerdict: reject MOVE fail (non-bounce) → actFailed + escalate (#59)", async () => {
+  const r = await route({
+    verdict: { status: "reject", to: "dev" },
+    ctx: { id: "c1", role: "tester", state: "test", gen: "1" },
+    overrides: { run: async (s) => (s === "reject.mjs" ? { ok: false, status: 422, reason: "bad edge" } : { ok: true }) },
+  });
+  assert.ok(r.actFailed, "reject failure surfaced");
+  assert.ok(r.acts.some(([s]) => s === "escalate.mjs"), "reject failure escalates");
+});
+
+test("routeVerdict: reject bounce-budget → its OWN escalate, actFailed NOT set as a generic failure (regression)", async () => {
+  const r = await route({
+    verdict: { status: "reject", to: "dev" },
+    ctx: { id: "c1", role: "tester", state: "test", gen: "1" },
+    overrides: { run: async (s) => (s === "reject.mjs" ? { ok: false, outcome: "gate_blocked", blocked_by: ["bounce budget"] } : { ok: true }) },
+  });
+  // exactly one escalate (the bounce-budget path), not doubled:
+  assert.equal(r.acts.filter(([s]) => s === "escalate.mjs").length, 1);
+});
+
+test("routeVerdict: submitted link-pr fail → actFailed + escalate; reattach-ci stays best-effort (#59)", async () => {
+  const r = await route({
+    verdict: { status: "submitted", evidence: { repo: "o/r", pr_number: 5, head: "h" } },
+    ctx: { id: "c1", role: "developer", state: "dev", gen: "1", kind: "work" },
+    overrides: { run: async (s) => (s === "link-pr.mjs" ? { ok: false, status: 422 } : { ok: true }) },
+  });
+  assert.ok(r.actFailed, "link-pr failure surfaced");
+  assert.ok(r.acts.some(([s]) => s === "escalate.mjs"), "link-pr failure escalates");
+});
+
+test("routeVerdict: submitted all-ok → no escalate, no actFailed (regression)", async () => {
+  const r = await route({
+    verdict: { status: "submitted", evidence: { repo: "o/r", pr_number: 5, head: "h" } },
+    ctx: { id: "c1", role: "developer", state: "dev", gen: "1", kind: "work" },
+    overrides: { run: async () => ({ ok: true }) },
+  });
+  assert.equal(r.actFailed, null);
+  assert.ok(!r.acts.some(([s]) => s === "escalate.mjs"));
+});
+
+test("routeVerdict: decomposed mid-loop CREATE fail → actFailed + escalate (#60)", async () => {
+  let n = 0;
+  const r = await route({
+    verdict: { status: "decomposed", children: [{ title: "a" }, { title: "b" }] },
+    ctx: { id: "epic1", to: "epic_decompose", role: "analyst", state: "epic_decompose", gen: "1" },
+    overrides: { run: async (s) => (s === "create.mjs" ? { ok: (++n === 1) } : { ok: true }) }, // first CREATE ok, second fails
+  });
+  assert.ok(r.actFailed, "partial CREATE failure surfaced");
+  assert.ok(r.acts.some(([s]) => s === "escalate.mjs"), "partial decompose escalates (no re-decompose dup)");
 });
