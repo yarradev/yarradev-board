@@ -103,6 +103,36 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
 > Spec: `docs/superpowers/specs/2026-07-07-pass-mjs-async-reconcile-design.md`. **Known V1 gap:** autonomous
 > `release.mjs` on `done→staging` is not yet ported — staging→prod stays human-gated (the safe default).
 
+### Native dispatch mode (interactive Claude Code — `runtime.dispatchMode: "native"`)
+
+When `runtime.dispatchMode` is `"native"` and you (the conductor) are running in a continuous
+interactive Claude Code session, `pass.mjs` does **not** spawn `claude -p`. Instead it emits one
+`{"action":"dispatch-request", ...}` JSON line on stdout per card it selected (already bounded by
+`pace.maxCardsPerPass`/`maxConcurrent` and the 529 breaker — do not re-bound). For each such line:
+
+1. Read `promptPath` (the **combined** role+card prompt) — its contents are the subagent prompt.
+2. Spawn the role subagent via the **`Agent` tool, `run_in_background`**, so it shows in the status line.
+   Map `role` → `subagent_type`: write-capable roles (developer/releaser/tester/devops) →
+   `general-purpose`; read-only advisors (code-reviewer/security-advisor/designer/analyst) → `Explore`.
+   Pass `model` from the request. If the request's `worktreeFlag` is non-empty (write-roles only —
+   the same set that gets `--worktree` in external mode), also pass `isolation: "worktree"` to the
+   `Agent` tool so this subagent runs in its own git worktree — required so parallel edits under
+   `K` > 1 fan-out don't corrupt a shared tree.
+3. When the agent completes (its `task-notification`), take its **final message** (the verdict block) and
+   land it: `printf '%s' "<agent final message>" | node $S/dispatch.mjs --complete <verdictPath> <cardId> --gen <gen> --role <role>`.
+   This writes the verdict file + `done` manifest entry — exactly what the next reconcile pass consumes.
+   **If the subagent failed or was overloaded** (it returned no fenced verdict block — e.g. a gateway
+   529/overload, or a crash), do NOT pipe empty/prose text: pipe a bare error-envelope JSON line instead,
+   so reconcile's `parseErrorEnvelope` (GH #44) still trips the 529 breaker exactly as external mode does.
+   Shape: `{"status":"error","error_type":"gateway_529"|"crash","detail":"<short reason>"}` — use
+   `"gateway_529"` when the agent's output/failure mentions 529/overload, otherwise `"crash"`. Example:
+   `printf '%s' '{"status":"error","error_type":"gateway_529","detail":"agent overloaded, no verdict"}' | node $S/dispatch.mjs --complete <verdictPath> <cardId> --gen <gen> --role <role>`.
+4. Do nothing else — the **next** `pass.mjs` run reconciles the landed verdict and posts the act (routing,
+   breaker, epic signals all unchanged). This is next-tick reconcile; latency ≤ one loop interval.
+
+If you are **not** in an interactive session with an `Agent` tool (headless/cron), set
+`dispatchMode: "external"` (the default) — `pass.mjs` spawns `claude -p` and this protocol does not apply.
+
 0. **Check context-pressure flag.** If `/tmp/yarradev-prep-clear` exists, do NOT claim a new
    card this pass. If a card is currently in-flight (leased), finish it normally — post its act
    and CLEAR_LEASE. Then call `/exit`. If no card is in-flight, exit immediately. The wrapper

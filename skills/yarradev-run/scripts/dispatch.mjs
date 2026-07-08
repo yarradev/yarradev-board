@@ -55,6 +55,10 @@ const BACKOFF_SCHEDULE_MS = (process.env.YARRADEV_DISPATCH_BACKOFF_MS ?? "20000,
   .split(",")
   .map((s) => Number(s.trim()) * 1);
 
+// #51: dispatch mode. "external" (default) spawns claude -p; "native" emits a dispatch-request for the host
+// conductor to fulfill via its Agent tool (status-line-visible, in-session). Env-overridable for tests.
+const DISPATCH_MODE = process.env.YARRADEV_DISPATCH_MODE ?? "external";
+
 // 529 detection. NOTE the two patterns differ between stages (preserved from bash):
 //  - retry gate: `529|overloaded|temporarily overloaded`
 //  - final classification: `529|overloaded`
@@ -220,11 +224,34 @@ export function doneEntry({ cardId, verdictPath, gen, role, completedAt }) {
 }
 
 /**
+ * Build the native-mode dispatch-request the host conductor fulfills via its Agent tool (GH #51). Pure.
+ * `promptPath` is the COMBINED prompt (role instructions + card prompt), so the conductor can pass it
+ * straight to the Agent tool. Shape is the contract SKILL.md's native protocol reads.
+ * @returns {{action:"dispatch-request", role, cardId, verdictPath, gen, promptPath, model, effort, tools, worktreeFlag}}
+ */
+export function buildDispatchRequest({ role, cardId, verdictPath, gen, promptPath, model, effort, tools, worktreeFlag }) {
+  return { action: "dispatch-request", role, cardId, verdictPath, gen, promptPath, model, effort, tools, worktreeFlag };
+}
+
+/**
  * ISO-8601 UTC timestamp (`date -u +%Y-%m-%dT%H:%M:%SZ` equivalent). Trims to whole seconds.
  * @returns {string}
  */
 export function utcNow() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+/**
+ * Native completion (GH #51): the host conductor calls this after its Agent-tool subagent returns, piping the
+ * agent's final message (the verdict) on stdin. Writes the verdict file and appends the `done` manifest entry —
+ * the exact artifacts `pass.mjs`'s reconcile consumes, so external and native land identically.
+ * @param {{verdictText:string, verdictPath:string, cardId:string, gen:string, role:string, manifestPath:string}} o
+ */
+export function completeNative({ verdictText, verdictPath, cardId, gen, role, manifestPath }) {
+  mkdirSync(dirname(verdictPath), { recursive: true });
+  writeFileSync(verdictPath, verdictText);
+  mkdirSync(dirname(manifestPath), { recursive: true });
+  appendFileSync(manifestPath, doneEntry({ cardId, verdictPath, gen, role, completedAt: utcNow() }) + "\n");
 }
 
 /**
@@ -445,6 +472,16 @@ function invoke({ role, cardId, promptFile, gen = "" }) {
     pendingEntry({ cardId, verdictPath, gen, role, dispatchedAt }) + "\n",
   );
 
+  // #51 native mode: do NOT spawn a runner. Emit the dispatch-request for the host conductor to fulfill via
+  // its Agent tool; it will write the verdict + `done` entry via `dispatch.mjs --complete`. Pending is
+  // already recorded above (so the in-flight filter + reconcile behave identically to external mode).
+  if (DISPATCH_MODE === "native") {
+    process.stdout.write(
+      JSON.stringify(buildDispatchRequest({ role, cardId, verdictPath, gen, promptPath: combinedPromptPath, model, effort, tools, worktreeFlag })) + "\n",
+    );
+    return verdictPath;
+  }
+
   // Runner argv (the runner derives the manifest path itself, but we pass --manifest for tests/override).
   const runnerArgs = [
     __filename,
@@ -517,6 +554,7 @@ function parseRunnerFlags(argv) {
     const a = argv[i];
     switch (a) {
       case "--gen": out.gen = argv[++i] ?? ""; break;
+      case "--role": out.role = argv[++i] ?? ""; break;
       case "--verdict": out.verdictPath = argv[++i] ?? ""; break;
       case "--model": out.model = argv[++i] ?? "sonnet"; break;
       case "--effort": out.effort = argv[++i] ?? "low"; break;
@@ -661,6 +699,24 @@ Exit: 0=dispatched, 1=error, 2=usage
         }
         process.exit(1);
       }
+      process.exit(0);
+    }
+
+    // --- native completion (--complete <verdictPath> <cardId> --gen <g> --role <r>) ---
+    if (argv[0] === "--complete") {
+      const verdictPath = argv[1];
+      const cardId = argv[2];
+      if (!verdictPath || !cardId) {
+        process.stderr.write("dispatch.mjs: --complete requires <verdictPath> <cardId>\n");
+        process.exit(2);
+      }
+      const flags = parseRunnerFlags(argv.slice(3)); // reuses --gen/--role parsing
+      const verdictText = readFileSync(0, "utf8"); // stdin
+      completeNative({
+        verdictText, verdictPath, cardId,
+        gen: flags.gen ?? "", role: flags.role ?? "",
+        manifestPath: MANIFEST_FILE,
+      });
       process.exit(0);
     }
 
