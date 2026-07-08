@@ -286,6 +286,7 @@ export async function routeVerdict({
   const dispatches = [];
   let advisorClear422 = false;
   let spawnDeferred = 0;
+  let actFailed = null;
 
   /** Call an act script via the injected `run` and record the invocation (the parity record assertions read). */
   const call = async (script, args) => {
@@ -329,7 +330,12 @@ export async function routeVerdict({
         // no advisor configured → inert (a stage with no advisor never produces advisor_clear in practice)
       }
       // any other 422/409 → ordinary failure path (caller CLEAR_LEASEs; decide re-derives next pass)
-      return { acts, dispatches, advisorClear422, spawnDeferred };
+      // GH #54: an unhandled MOVE failure (not ok, not the advisor_clear reshape) must be surfaced, not
+      // silently reported as "routed".
+      if (!(mv && mv.ok) && !advisorClear422) {
+        actFailed = { script: "move.mjs", result: mv ?? null };
+      }
+      return { acts, dispatches, advisorClear422, spawnDeferred, actFailed };
     }
 
     // ---- reject (worker carries `to`; advisor omits it → conductor derives) ---
@@ -384,13 +390,20 @@ export async function routeVerdict({
         const r = await call("create.mjs", args);
         if (!r || !r.ok) {
           allCreated = false;
+          actFailed = { script: "create.mjs", result: r ?? null }; // GH #54: partial decomposition surfaced
           break; // CREATE failure → stop issuing further CREATEs; next pass re-dispatches the analyst.
         }
       }
       if (allCreated) {
-        await call("move.mjs", [id, gen, ctx.to, ctx.role]); // advance the epic to the barrier stage
+        const mvr = await call("move.mjs", [id, gen, ctx.to, ctx.role]); // advance the epic to the barrier stage
+        if (!(mvr && mvr.ok)) {
+          // GH #54: children were minted but the epic can't reach the barrier stage → inconsistent half-state.
+          // Surface AND escalate (loud board signal), not a silent retry.
+          actFailed = { script: "move.mjs", result: mvr ?? null };
+          await call("escalate.mjs", [id, "decomposed: children created but barrier advance failed"]);
+        }
       }
-      return { acts, dispatches, advisorClear422, spawnDeferred };
+      return { acts, dispatches, advisorClear422, spawnDeferred, actFailed };
     }
 
     // ---- question → escalate (park for a human) ------------------------------
@@ -654,11 +667,15 @@ export async function reconcileVerdicts({
       // CLEAR_LEASE — always, in every branch (the caller owns this; routeVerdict never clears).
       await run("clear-lease.mjs", [cardId, gen]);
       await appendConsumed(verdictPath);
+      if (r.actFailed) {
+        logger(`[pass] reconcile ${verdictPath}: act ${r.actFailed.script} FAILED (${r.actFailed.result?.reason ?? r.actFailed.result?.outcome ?? "no detail"}) — card NOT advanced`);
+      }
       results.push({
         verdictPath,
         cardId,
-        outcome: r.error ? "error" : "routed",
+        outcome: r.error ? "error" : r.actFailed ? "act_failed" : "routed",
         advisorClear422: r.advisorClear422,
+        ...(r.actFailed ? { actFailed: r.actFailed } : {}),
         ...(r.error ? { error: r.error } : {}),
       });
     } catch (e) {
@@ -843,23 +860,31 @@ export function makeDispatch(toolPath, mode = "external") {
   };
 }
 
-/** Build the real advisor-prompt writer (the 422 async-dispatch path). Minimal V1 — repo/branch/head/watch_paths. */
-export function makeBuildAdvisorPrompt(lifecycle, doName) {
-  return (ctx, advisorRole) => {
+/** Build the real advisor-prompt writer (the 422 async-dispatch path). Sources `head` from the card's linked
+ * PR (GH #55 — ctx is empty for tester-owned stages); the advisor self-discovers its branch by cardId. */
+export function makeBuildAdvisorPrompt(lifecycle, doName, getCard) {
+  return async (ctx, advisorRole) => {
     const advisor = lifecycle?.[ctx.state]?.advisors?.find((a) => a?.role === advisorRole);
     const watchPaths = Array.isArray(advisor?.watch_paths) ? advisor.watch_paths : [];
+    let head = ctx.head ?? "";
+    try {
+      const card = getCard ? await getCard(ctx.id) : null;
+      if (card?.linked_head_sha) head = card.linked_head_sha;
+    } catch {
+      /* best-effort: fall back to ctx.head */
+    }
     const lines = [
       "=== Advisor review ===",
       `doName: ${doName ?? ""}`,
       `cardId: ${ctx.id}`,
       `state: ${ctx.state}`,
       `repo: ${ctx.repo ?? ""}`,
-      `branch: ${ctx.branch ?? ""}`,
-      `head: ${ctx.head ?? ""}`,
+      `head: ${head}`,
       `role: ${advisorRole}`,
       `watch_paths: ${JSON.stringify(watchPaths)}`,
       "",
-      "Review the linked head for this stage's concerns. Post a verdict: {status, head, reason?}.",
+      `Find the branch for card ${ctx.id} yourself (e.g. git branch -r --list 'origin/*${ctx.id}*'), review the`,
+      "linked head above for this stage's concerns, then post a verdict: {status, head, reason?}.",
     ];
     const path = `/tmp/yarradev-prompt-${ctx.id}-${advisorRole}.txt`;
     writeFileSync(path, lines.join("\n") + "\n");
@@ -932,7 +957,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
   const run = makeRun();
   const dispatch = makeDispatch(cfg.runtime?.dispatchTool, cfg.runtime?.dispatchMode ?? "external");
-  const buildAdvisorPrompt = makeBuildAdvisorPrompt(lifecycle, cfg.doName);
   const getCard = async (id) => {
     try {
       return await client.getEnriched(id);
@@ -940,6 +964,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       return null;
     }
   };
+  const buildAdvisorPrompt = makeBuildAdvisorPrompt(lifecycle, cfg.doName, getCard);
 
   // --- Phase 1: reconcile landed verdicts (from this pass AND prior-pass dispatches still running) ---
   const manifestContent = readIfPresent(manifestPath);
