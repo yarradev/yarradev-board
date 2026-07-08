@@ -55,6 +55,10 @@ const BACKOFF_SCHEDULE_MS = (process.env.YARRADEV_DISPATCH_BACKOFF_MS ?? "20000,
   .split(",")
   .map((s) => Number(s.trim()) * 1);
 
+// #51: dispatch mode. "external" (default) spawns claude -p; "native" emits a dispatch-request for the host
+// conductor to fulfill via its Agent tool (status-line-visible, in-session). Env-overridable for tests.
+const DISPATCH_MODE = process.env.YARRADEV_DISPATCH_MODE ?? "external";
+
 // 529 detection. NOTE the two patterns differ between stages (preserved from bash):
 //  - retry gate: `529|overloaded|temporarily overloaded`
 //  - final classification: `529|overloaded`
@@ -217,6 +221,16 @@ export function pendingEntry({ cardId, verdictPath, gen, role, dispatchedAt }) {
  */
 export function doneEntry({ cardId, verdictPath, gen, role, completedAt }) {
   return JSON.stringify({ status: "done", cardId, verdictPath, gen, role, completedAt });
+}
+
+/**
+ * Build the native-mode dispatch-request the host conductor fulfills via its Agent tool (GH #51). Pure.
+ * `promptPath` is the COMBINED prompt (role instructions + card prompt), so the conductor can pass it
+ * straight to the Agent tool. Shape is the contract SKILL.md's native protocol reads.
+ * @returns {{action:"dispatch-request", role, cardId, verdictPath, gen, promptPath, model, effort, tools, worktreeFlag}}
+ */
+export function buildDispatchRequest({ role, cardId, verdictPath, gen, promptPath, model, effort, tools, worktreeFlag }) {
+  return { action: "dispatch-request", role, cardId, verdictPath, gen, promptPath, model, effort, tools, worktreeFlag };
 }
 
 /**
@@ -444,6 +458,16 @@ function invoke({ role, cardId, promptFile, gen = "" }) {
     manifestPath,
     pendingEntry({ cardId, verdictPath, gen, role, dispatchedAt }) + "\n",
   );
+
+  // #51 native mode: do NOT spawn a runner. Emit the dispatch-request for the host conductor to fulfill via
+  // its Agent tool; it will write the verdict + `done` entry via `dispatch.mjs --complete`. Pending is
+  // already recorded above (so the in-flight filter + reconcile behave identically to external mode).
+  if (DISPATCH_MODE === "native") {
+    process.stdout.write(
+      JSON.stringify(buildDispatchRequest({ role, cardId, verdictPath, gen, promptPath: combinedPromptPath, model, effort, tools, worktreeFlag })) + "\n",
+    );
+    return verdictPath;
+  }
 
   // Runner argv (the runner derives the manifest path itself, but we pass --manifest for tests/override).
   const runnerArgs = [
