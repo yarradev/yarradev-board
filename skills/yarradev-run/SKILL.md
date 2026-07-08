@@ -400,6 +400,12 @@ If you are **not** in an interactive session with an `Agent` tool (headless/cron
           A stage with **no configured advisor** never produces `blocked_by ⊇ advisor_clear`, so this
           bullet is inert for it. Any OTHER `blocked_by` → ordinary Failure-map handling (CLEAR_LEASE;
           the next pass re-derives).
+          - **Head/branch sourcing for this async reshape (GH #55):** `pass.mjs`'s actual prompt builder for
+            this path (`makeBuildAdvisorPrompt`) does NOT get `repo`/`branch` from the owner's dispatch
+            context — that context is reconstructed at reconcile time and is often empty for tester-owned
+            stages. It sources `head` from the card's linked PR (`linked_head_sha`, falling back to
+            `ctx.head` if the card fetch fails) and has the advisor **self-discover its own branch by
+            `cardId`** (e.g. `git branch -r --list 'origin/*<cardId>*'`) rather than being handed one.
       - judgement `status:"reject"` → **REJECT routing.** The stage owner's OWN reject verdict always
         carries `verdict.to` (e.g. the tester's `{status:"reject","to":"dev"}`) — post
         `node $S/reject.mjs <id> <gen> <verdict.to> <role>` (backward REJECT edge, posted under the stage
@@ -429,7 +435,10 @@ If you are **not** in an interactive session with an `Agent` tool (headless/cron
            further CREATEs for this card this pass; the next pass re-dispatches the analyst (still at
            `epic_decompose`, since the epic hasn't moved) and it can re-decompose from scratch.
         2. Then `node $S/move.mjs <epicId> <gen> <to> analyst` — advances the epic to `<to>` (the barrier
-           stage) now that its children exist.
+           stage) now that its children exist. **If this MOVE fails**, the children are already minted but
+           the epic can't reach the barrier — an inconsistent half-advance. Do not silently retry: surface it
+           (reconcile outcome `act_failed`) AND `node $S/escalate.mjs <epicId> "decomposed: children created
+           but barrier advance failed"` (loud board signal for a human), same as a mid-loop CREATE failure.
         3. CLEAR_LEASE as usual (every branch clears the lease — see step 4 below).
       - mechanical `status:"submitted"` `evidence:{repo, pr_number, head}` — choose the act by **`kind`**,
         never by a second snapshot read:
@@ -502,6 +511,7 @@ If you are **not** in an interactive session with an `Agent` tool (headless/cron
 | Dispatch | `dispatch-and-wait.mjs` non-zero exit (tool missing / dispatch failed / poll timeout) / subagent finished with no JSON verdict in `$V` | post nothing; **CLEAR_LEASE**; retry next pass. A poll-timeout (long subagent outlasted the lease) does NOT re-dispatch immediately — `list-ready` skips the card while its dispatch is `pending` (GH #27); it becomes reclaimable once the subagent finishes or the entry goes stale. (An empty `$V` after the wrapper returns is a real failure — the subagent produced no verdict.) |
 | MOVE/REJECT | 409 fenced (lease/TTL expired mid-work) | **CLEAR_LEASE**; redo next pass |
 | MOVE/REJECT/LINK_PR/PUSH | 422 gate_blocked / bad_act | **CLEAR_LEASE**; `decide` re-derives next pass (gate flipped → wait/respawn; budget → escalate; bounce → escalate). `blocked_by` is surfaced so you can branch on the failing predicate. |
+| MOVE/CREATE (reconcile-time act, `reconcileVerdicts`) | posted act returns `!ok` (e.g. a 422 bad-act, or a crashed per-role token) | **CLEAR_LEASE**; consume the verdict; surfaced as reconcile outcome `act_failed` — the card is **NOT** advanced. Distinct from `error` (reconcile machinery itself threw) and `routed` (success). The `decomposed` barrier-advance failure (children minted but the epic's MOVE to the barrier stage fails) is a special case: it also escalates (loud board signal), not a silent retry. |
 | CLEAR_LEASE | any | best-effort; the lease expires at its TTL anyway |
 
 ## Verify
