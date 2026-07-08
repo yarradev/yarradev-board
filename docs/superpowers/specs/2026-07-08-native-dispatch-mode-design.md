@@ -34,7 +34,7 @@ The two backends are **symmetric**: the only difference is *who produces the ver
 ### Why this reuses everything
 - **Reconcile** (`reconcileVerdicts` / `nextUnconsumedDone`) reads verdict files from the manifest — unchanged.
 - **Routing** (`routeVerdict` / SKILL.md parity steps) — unchanged.
-- **529 breaker** — the `Agent` subagent hits the same model gateway; a 529 lands in its output, the conductor writes it to the verdict file, reconcile classifies it `gateway_529`, the breaker trips. Works.
+- **529 breaker** — preserved **only if** the conductor follows the SKILL.md native protocol's failure-handling step: `completeNative` (the `--complete` handler) writes whatever text it's piped **verbatim**, with no classification of its own — unlike external mode, where a 529 makes the runner itself append a `{"status":"error","error_type":"gateway_529",...}` envelope. So on an overloaded/failed subagent, the conductor must pipe that same bare error-envelope line into `--complete` in place of the (absent) verdict; only then does reconcile's `parseErrorEnvelope` classify it `gateway_529` and trip the breaker. If the conductor instead pipes empty/prose text, reconcile sees `no-parse`, not `gateway_529`, and the breaker never trips.
 - **Bounds** (`decideDispatch` → `effectiveK`, `maxConcurrent`) — `pass.mjs` already emits at most `effectiveK` dispatch-requests, so the conductor naturally fires at most `effectiveK` background agents.
 
 ## Components
