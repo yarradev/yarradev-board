@@ -27,6 +27,7 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./plugin-io.mjs";
+import { inFlightCardIds } from "./in-flight.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const SCRIPTS_DIR = HERE;
@@ -38,6 +39,7 @@ function defaultStateDir() {
 const MANIFEST_NAME = "dispatch-manifest.jsonl";
 const CONSUMED_NAME = "dispatch-consumed.jsonl";
 const CONTEXT_NAME = "dispatch-context.jsonl";
+const BREAKER_NAME = "dispatch-breaker.json";
 
 // ============================================================================
 // Pure helpers (no I/O — the testable surface)
@@ -173,6 +175,54 @@ export function selectForDispatch(cards, K, epicOf) {
   if (topEpic.length >= K) return topEpic.slice(0, K);
   // top epic has <K ready → fill cross-epic up to K (cards are sorted, so this takes top-epic first)
   return cards.slice(0, K);
+}
+
+/**
+ * How many NEW cards to dispatch this pass. Pure. Combines the per-pass rate limit K, the total-in-flight
+ * ceiling maxConcurrent, the count already in-flight, and the circuit-breaker state:
+ *   - "CLOSED"    → min(K, maxConcurrent − inFlightCount), floored at 0 (normal fan-out)
+ *   - "HALF_OPEN" → at most 1 (single probe after cooldown), still headroom-clamped
+ *   - "OPEN"      → 0 (reconcile-only; gateway is shedding load)
+ * @param {{K:number, maxConcurrent:number, inFlightCount:number, breakerState:"CLOSED"|"HALF_OPEN"|"OPEN"}} o
+ * @returns {number}
+ */
+export function computeEffectiveK({ K, maxConcurrent, inFlightCount, breakerState }) {
+  if (breakerState === "OPEN") return 0;
+  const cap = breakerState === "HALF_OPEN" ? 1 : K;
+  return Math.max(0, Math.min(cap, maxConcurrent - inFlightCount));
+}
+
+/**
+ * Advance the 529 circuit breaker one step. Evaluated each pass AFTER reconcile, so `saw529` reflects this
+ * pass's reconciled verdicts. Cooldown + half-open semantics (now/breakerUntil epoch ms, cooldownS seconds):
+ *   - saw529 (from ANY state)      → OPEN, breakerUntil = now + cooldownS*1000 (trip / re-arm)
+ *   - OPEN and now ≥ breakerUntil  → HALF_OPEN (allow one probe next pass)
+ *   - HALF_OPEN and !saw529        → CLOSED (probe pass came back clean)
+ *   - otherwise                    → unchanged
+ * Pure — no clock read, no I/O.
+ * @param {{state:"CLOSED"|"HALF_OPEN"|"OPEN", breakerUntil?:number, saw529:boolean, now:number, cooldownS:number}} o
+ * @returns {{state:"CLOSED"|"HALF_OPEN"|"OPEN", breakerUntil:number}}
+ */
+export function advanceBreaker({ state, breakerUntil = 0, saw529, now, cooldownS }) {
+  if (saw529) return { state: "OPEN", breakerUntil: now + cooldownS * 1000 };
+  if (state === "OPEN" && now >= breakerUntil) return { state: "HALF_OPEN", breakerUntil };
+  if (state === "HALF_OPEN") return { state: "CLOSED", breakerUntil };
+  return { state, breakerUntil };
+}
+
+/**
+ * Decide this pass's dispatch budget: reduce the 529 signal from reconcile results, advance the breaker, then
+ * compute effectiveK. Pure — composes advanceBreaker + computeEffectiveK; main() supplies the I/O (read/write
+ * the breaker state file, count in-flight).
+ * @param {{recResults:Array<{error_type?:string}>|undefined, prevBreaker:{state:string,breakerUntil:number},
+ *          inFlightCount:number, K:number, maxConcurrent:number, cooldownS:number, now:number}} o
+ * @returns {{effectiveK:number, breaker:{state:string,breakerUntil:number}, saw529:boolean}}
+ */
+export function decideDispatch({ recResults, prevBreaker, inFlightCount, K, maxConcurrent, cooldownS, now }) {
+  const saw529 = Array.isArray(recResults) && recResults.some((r) => r?.error_type === "gateway_529");
+  const breaker = advanceBreaker({ ...prevBreaker, saw529, now, cooldownS });
+  const effectiveK = computeEffectiveK({ K, maxConcurrent, inFlightCount, breakerState: breaker.state });
+  return { effectiveK, breaker, saw529 };
 }
 
 /** Detect a board "bounce budget exhausted" 422 on a REJECT (thrash cap → escalate, don't re-loop). */
@@ -807,6 +857,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const cfg = loadConfig();
   const K = cfg.pace?.maxCardsPerPass ?? 1;
   const ttlS = cfg.pace?.claimTtlS ?? 1800;
+  const maxConcurrent = cfg.pace?.maxConcurrent ?? Infinity;
+  const breakerCooldownS = cfg.pace?.breakerCooldownS ?? 600;
+  const inflightStaleS = Number(cfg.runtime?.inflightStaleS ?? 7200);
 
   // Context management (epic-context-clearing): if the prep-clear flag is set (by the yarradev-loop wrapper
   // on CTX%≥60%, or by the pass-count fallback below), reconcile in-flight verdicts but do NOT claim/dispatch
@@ -867,6 +920,32 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   for (const r of recResults) {
     process.stdout.write(
       JSON.stringify({ phase: "reconcile", ...r }) + "\n",
+    );
+  }
+
+  // --- 529 circuit breaker + total-concurrency bound (GH #39) ---
+  const breakerPath = join(stateDir, BREAKER_NAME);
+  const nowMs = Date.now();
+  let prevBreaker = { state: "CLOSED", breakerUntil: 0 };
+  try {
+    const raw = readIfPresent(breakerPath);
+    if (raw) prevBreaker = { state: "CLOSED", breakerUntil: 0, ...JSON.parse(raw) };
+  } catch {
+    /* corrupt breaker file → default CLOSED */
+  }
+  const inFlightCount = inFlightCardIds(manifestContent, nowMs, inflightStaleS).size;
+  const { effectiveK, breaker, saw529 } = decideDispatch({
+    recResults, prevBreaker, inFlightCount, K, maxConcurrent, cooldownS: breakerCooldownS, now: nowMs,
+  });
+  try {
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(breakerPath, JSON.stringify(breaker));
+  } catch (e) {
+    process.stderr.write(`[pass] breaker persist failed: ${e?.message ?? e} (non-fatal)\n`);
+  }
+  if (breaker.state !== "CLOSED" || saw529) {
+    process.stderr.write(
+      `[pass] breaker ${breaker.state} (saw529=${saw529}, inFlight=${inFlightCount}/${maxConcurrent}, effectiveK=${effectiveK})\n`,
     );
   }
 
@@ -931,10 +1010,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
   if (skipDispatch) {
     process.stdout.write(JSON.stringify({ phase: "dispatch", action: "skipped", reason: "prep-clear" }) + "\n");
+  } else if (effectiveK <= 0) {
+    const reason = breaker.state === "OPEN" ? "breaker-open" : "at-capacity";
+    process.stdout.write(
+      JSON.stringify({ phase: "dispatch", action: "skipped", reason, inFlightCount, breakerState: breaker.state }) + "\n",
+    );
   } else {
     const dispatchOut = await dispatchNew({
       cards: dispatchCards,
-      K,
+      K: effectiveK,
       epicOf,
       run,
       dispatch,
