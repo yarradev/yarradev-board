@@ -784,6 +784,23 @@ function sanitizeEnv(env) {
 }
 
 /**
+ * Parse dispatch.mjs's native-mode stdout (GH #51): the last non-empty line is the dispatch-request JSON.
+ * Returns the parsed verdictPath and the raw request line (to re-emit to the conductor). Throws if absent/malformed.
+ * @param {string} stdout
+ * @returns {{verdictPath:string, requestLine:string}}
+ */
+export function parseNativeDispatchOutput(stdout) {
+  const lines = (stdout ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const last = lines[lines.length - 1];
+  if (!last) throw new Error("native dispatch produced no output");
+  const req = JSON.parse(last); // throws on malformed
+  if (!req || req.action !== "dispatch-request" || !req.verdictPath) {
+    throw new Error(`native dispatch output is not a dispatch-request: ${last.slice(0, 120)}`);
+  }
+  return { verdictPath: req.verdictPath, requestLine: last };
+}
+
+/**
  * Build the real fire-and-forget `dispatch(role, cardId, promptFile)`. Precedence (highest → lowest):
  *   1. toolPath                      — cfg.runtime.dispatchTool (explicit per-project override)
  *   2. YARRADEV_DISPATCH             — legacy external binary (e.g. ~/work/tools/yarradev-dispatch)
@@ -791,11 +808,26 @@ function sanitizeEnv(env) {
  *
  * Returns the verdictPath (stdout) on success; throws on non-zero exit / no-path. The contract the
  * conductor depends on is unchanged.
+ *
+ * `mode` (GH #51): "external" (default) spawns and blocks as above. "native" spawns dispatch.mjs with
+ * YARRADEV_DISPATCH_MODE=native, which emits a dispatch-request JSON line instead of running claude -p;
+ * that line is re-emitted to pass.mjs's own stdout so the host conductor sees it and fulfills it via its
+ * own Agent tool, and the parsed verdictPath is returned (unchanged dispatchNew contract).
  */
-export function makeDispatch(toolPath) {
+export function makeDispatch(toolPath, mode = "external") {
   const externalTool = toolPath ?? process.env.YARRADEV_DISPATCH ?? null;
   const dispatchMjs = join(SCRIPTS_DIR, "dispatch.mjs");
   return async (role, cardId, promptFile) => {
+    // #51 native mode: dispatch.mjs emits a dispatch-request instead of spawning; surface it to the conductor
+    // (its Agent tool fulfills it) and return the verdictPath (unchanged dispatchNew contract).
+    if (mode === "native") {
+      const env = { ...sanitizeEnv(process.env), YARRADEV_DISPATCH_MODE: "native" };
+      const r = spawnSync(process.execPath, [dispatchMjs, role, cardId, promptFile], { encoding: "utf8", env });
+      if (r.status !== 0) throw new Error(`dispatch exited ${r.status}${r.stderr ? ` — ${r.stderr.trim()}` : ""}`);
+      const { verdictPath, requestLine } = parseNativeDispatchOutput(r.stdout);
+      process.stdout.write(requestLine + "\n"); // conductor reads this and fires an Agent(background) call
+      return verdictPath;
+    }
     const r = externalTool
       ? spawnSync(externalTool, [role, cardId, promptFile], { encoding: "utf8", env: sanitizeEnv(process.env) })
       : spawnSync(process.execPath, [dispatchMjs, role, cardId, promptFile], {
