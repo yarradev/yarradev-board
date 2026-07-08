@@ -175,6 +175,27 @@ export function selectForDispatch(cards, K, epicOf) {
   return cards.slice(0, K);
 }
 
+/**
+ * How many NEW cards to dispatch this pass. Pure. Combines the per-pass rate limit K, the total-in-flight
+ * ceiling maxConcurrent, the count already in-flight, and the circuit-breaker state:
+ *   - "CLOSED"    → min(K, maxConcurrent − inFlightCount), floored at 0 (normal fan-out)
+ *   - "HALF_OPEN" → at most 1 (single probe after cooldown), still headroom-clamped
+ *   - "OPEN"      → 0 (reconcile-only; gateway is shedding load)
+ * @param {{K:number, maxConcurrent:number, inFlightCount:number, breakerState:"CLOSED"|"HALF_OPEN"|"OPEN"}} o
+ * @returns {number}
+ */
+export function computeEffectiveK({ K, maxConcurrent, inFlightCount, breakerState }) {
+  if (breakerState === "OPEN") return 0;
+  const cap = breakerState === "HALF_OPEN" ? 1 : K;
+  return Math.max(0, Math.min(cap, maxConcurrent - inFlightCount));
+}
+
+// TODO: Task 2 — advanceBreaker
+export function advanceBreaker() {}
+
+// TODO: Task 3 — decideDispatch
+export function decideDispatch() {}
+
 /** Detect a board "bounce budget exhausted" 422 on a REJECT (thrash cap → escalate, don't re-loop). */
 function isBounceBudget(r) {
   if (r?.outcome !== "gate_blocked") return false;
