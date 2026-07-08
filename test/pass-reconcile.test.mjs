@@ -9,7 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseLastVerdict, nextUnconsumedDone, reconcileVerdicts } from "../skills/yarradev-run/scripts/pass.mjs";
+import { parseLastVerdict, parseErrorEnvelope, nextUnconsumedDone, reconcileVerdicts } from "../skills/yarradev-run/scripts/pass.mjs";
 
 // ---- parseLastVerdict -----------------------------------------------------------
 
@@ -183,7 +183,7 @@ function manifestDoneEntry(cardId, verdictPath, role) {
   return JSON.stringify({ status: "done", cardId, verdictPath, role, completedAt: "2026-07-08T00:00:00Z" });
 }
 
-async function runReconcile({ current_gen, recorded, claimResult = { ok: true, gen: 99 } }) {
+async function runReconcile({ current_gen, recorded, claimResult = { ok: true, gen: 99 }, verdictText }) {
   const calls = [];
   const results = await reconcileVerdicts({
     manifestContent: manifestDoneEntry("c1", "/v/1", "developer"),
@@ -197,7 +197,7 @@ async function runReconcile({ current_gen, recorded, claimResult = { ok: true, g
       return { ok: true };
     },
     getCard: async () => ({ id: "c1", current_gen }),
-    readVerdict: async () => "```json\n{\"status\":\"advance\",\"to\":\"test\"}\n```",
+    readVerdict: async () => verdictText ?? "```json\n{\"status\":\"advance\",\"to\":\"test\"}\n```",
     readContext: async () => recorded,
     appendConsumed: async () => {},
     dispatch: async () => {},
@@ -234,4 +234,38 @@ test("reconcile: re-CLAIM 409 (card moved on) → skipped + consumed, no act pos
   const scripts = calls.map((c) => c.script);
   assert.ok(!scripts.includes("move.mjs") && !scripts.includes("clear-lease.mjs"), "must not post or clear on a stale skip");
   assert.equal(results[0].outcome, "skipped");
+});
+
+// ---- parseErrorEnvelope (#44: distinguish a gateway outage from a card stall) -----------------------
+
+test("parseErrorEnvelope: bare dispatcher error line → parsed", () => {
+  const text = "API Error: 529 [overloaded]\n--- exit: 1 ---\n{\"status\":\"error\",\"error_type\":\"gateway_529\",\"detail\":\"overloaded\"}";
+  assert.deepEqual(parseErrorEnvelope(text), { status: "error", error_type: "gateway_529", detail: "overloaded" });
+});
+
+test("parseErrorEnvelope: LAST envelope line wins (multiple)", () => {
+  const text = "{\"status\":\"error\",\"error_type\":\"crash\",\"detail\":\"old\"}\n{\"status\":\"error\",\"error_type\":\"gateway_529\",\"detail\":\"new\"}";
+  assert.equal(parseErrorEnvelope(text).error_type, "gateway_529");
+});
+
+test("parseErrorEnvelope: a real fenced verdict (no envelope) → null", () => {
+  const text = "```json\n{\"status\":\"advance\",\"to\":\"test\"}\n```";
+  assert.equal(parseErrorEnvelope(text), null, "a normal verdict must not be misread as an error envelope");
+});
+
+test("parseErrorEnvelope: a bare non-error JSON line → null (only status:error counts)", () => {
+  const text = "some prose\n{\"status\":\"advance\",\"to\":\"test\"}";
+  assert.equal(parseErrorEnvelope(text), null);
+});
+
+test("parseErrorEnvelope: empty / null → null", () => {
+  assert.equal(parseErrorEnvelope(""), null);
+  assert.equal(parseErrorEnvelope(null), null);
+});
+
+test("reconcile #44: a 529 verdict (no fenced block + bare envelope) → outcome dispatch_error, NOT no-parse", async () => {
+  const verdictText = "API Error: 529 [1305][overloaded]\n--- attempt 4 exit: 1 ---\n{\"status\":\"error\",\"error_type\":\"gateway_529\",\"detail\":\"temporarily overloaded\"}";
+  const { results } = await runReconcile({ current_gen: 7, recorded: { gen: 7 }, verdictText });
+  assert.equal(results[0].outcome, "dispatch_error", "a gateway outage must surface as dispatch_error, not the generic no-parse");
+  assert.equal(results[0].error_type, "gateway_529");
 });
