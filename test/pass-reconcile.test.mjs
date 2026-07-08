@@ -9,7 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseLastVerdict, nextUnconsumedDone } from "../skills/yarradev-run/scripts/pass.mjs";
+import { parseLastVerdict, nextUnconsumedDone, reconcileVerdicts } from "../skills/yarradev-run/scripts/pass.mjs";
 
 // ---- parseLastVerdict -----------------------------------------------------------
 
@@ -172,4 +172,66 @@ test("nextUnconsumedDone: preserves extra manifest fields (gen, repo, head) on r
   const out = nextUnconsumedDone(manifest, "");
   assert.equal(out[0].head, "abc123");
   assert.equal(out[0].repo, "acme/main");
+});
+
+// ---- reconcileVerdicts gen-determination (#37) -----------------------------------
+// The dispatch-context ledger recorded the original CLAIM gen. If it's still current (lease active), the
+// reconcile uses it directly instead of re-CLAIMing (which would 409 on the active lease and strand the card
+// leased for up to claimTtlS). Re-CLAIM only when the gen is stale/absent (#27 recovery).
+
+function manifestDoneEntry(cardId, verdictPath, role) {
+  return JSON.stringify({ status: "done", cardId, verdictPath, role, completedAt: "2026-07-08T00:00:00Z" });
+}
+
+async function runReconcile({ current_gen, recorded, claimResult = { ok: true, gen: 99 } }) {
+  const calls = [];
+  const results = await reconcileVerdicts({
+    manifestContent: manifestDoneEntry("c1", "/v/1", "developer"),
+    consumedContent: "",
+    contextContent: "",
+    lifecycle: {},
+    machine: { transitions: [] },
+    run: async (script, args) => {
+      calls.push({ script, args });
+      if (script === "claim.mjs") return claimResult;
+      return { ok: true };
+    },
+    getCard: async () => ({ id: "c1", current_gen }),
+    readVerdict: async () => "```json\n{\"status\":\"advance\",\"to\":\"test\"}\n```",
+    readContext: async () => recorded,
+    appendConsumed: async () => {},
+    dispatch: async () => {},
+    buildAdvisorPrompt: async () => "",
+    logger: () => {},
+  });
+  return { calls, results };
+}
+
+test("reconcile #37: lease active (originalGen === current_gen) → uses original gen, NO re-CLAIM, clears with it", async () => {
+  const { calls, results } = await runReconcile({ current_gen: 7, recorded: { gen: 7, kind: "work", to: "test", role: "developer" } });
+  const scripts = calls.map((c) => c.script);
+  assert.ok(!scripts.includes("claim.mjs"), "must NOT re-CLAIM when the original gen is still current (the #37 bug)");
+  const clear = calls.find((c) => c.script === "clear-lease.mjs");
+  assert.ok(clear, "must CLEAR_LEASE");
+  assert.deepEqual(clear.args, ["c1", 7], "clears with the original (still-current) gen");
+  assert.equal(results[0].outcome, "routed");
+});
+
+test("reconcile #27: lease stale (originalGen !== current_gen) → re-CLAIMs fresh gen, clears with it", async () => {
+  const { calls, results } = await runReconcile({ current_gen: 8, recorded: { gen: 7 }, claimResult: { ok: true, gen: 8 } });
+  assert.ok(calls.find((c) => c.script === "claim.mjs"), "must re-CLAIM when the original gen is stale");
+  assert.deepEqual(calls.find((c) => c.script === "clear-lease.mjs").args, ["c1", 8], "clears with the re-CLAIMed gen");
+  assert.equal(results[0].outcome, "routed");
+});
+
+test("reconcile: no dispatch-context → re-CLAIMs (fallback for older dispatches / write failure)", async () => {
+  const { calls } = await runReconcile({ current_gen: 7, recorded: null, claimResult: { ok: true, gen: 7 } });
+  assert.ok(calls.find((c) => c.script === "claim.mjs"), "re-CLAIMs when no recorded gen is available");
+});
+
+test("reconcile: re-CLAIM 409 (card moved on) → skipped + consumed, no act posted, no CLEAR_LEASE", async () => {
+  const { calls, results } = await runReconcile({ current_gen: 8, recorded: null, claimResult: { ok: false, status: 409 } });
+  const scripts = calls.map((c) => c.script);
+  assert.ok(!scripts.includes("move.mjs") && !scripts.includes("clear-lease.mjs"), "must not post or clear on a stale skip");
+  assert.equal(results[0].outcome, "skipped");
 });

@@ -502,17 +502,31 @@ export async function reconcileVerdicts({
       const verdictText = await readVerdict(verdictPath);
       const verdict = parseLastVerdict(verdictText);
 
-      // re-CLAIM — fresh gen (the #27 recovery: a verdict that landed past lease-TTL still posts).
-      const claim = await run("claim.mjs", [cardId, role, ttlS]);
-      if (!claim || !claim.ok) {
-        const reason =
-          claim?.status === 409 ? "stale verdict (card moved on)" : `claim ${claim?.status ?? "failed"}`;
-        logger(`[pass] reconcile ${verdictPath}: ${reason}; consuming`);
-        await appendConsumed(verdictPath);
-        results.push({ verdictPath, cardId, outcome: "skipped", reason });
-        continue;
+      // Determine the gen to post under (#37). The dispatch-context ledger recorded the original CLAIM gen;
+      // if it's STILL current (the lease is active — lease-TTL hadn't bumped it), use it directly. Re-CLAIMing
+      // now would 409 on the active lease and leave the card stuck leased for up to claimTtlS. Only re-CLAIM
+      // when the original gen is stale (lease expired → bumped) or absent — that's the #27 recovery path.
+      const recorded = await readContext(verdictPath);
+      let gen;
+      const originalGen = recorded?.gen;
+      if (originalGen != null) {
+        const leaseCard = await getCard(cardId);
+        if (leaseCard && leaseCard.current_gen === originalGen) {
+          gen = originalGen; // lease active, gen current → use it (no re-CLAIM, no spurious 409)
+        }
       }
-      const gen = claim.gen;
+      if (gen == null) {
+        const claim = await run("claim.mjs", [cardId, role, ttlS]);
+        if (!claim || !claim.ok) {
+          const reason =
+            claim?.status === 409 ? "stale verdict (card moved on)" : `claim ${claim?.status ?? "failed"}`;
+          logger(`[pass] reconcile ${verdictPath}: ${reason}; consuming`);
+          await appendConsumed(verdictPath);
+          results.push({ verdictPath, cardId, outcome: "skipped", reason });
+          continue;
+        }
+        gen = claim.gen;
+      }
 
       if (verdict == null) {
         // No parseable block → post nothing (SKILL.md: log; the card re-dispatches next pass via dispatchNew).
@@ -523,9 +537,6 @@ export async function reconcileVerdicts({
         continue;
       }
 
-      // Recover the dispatch context (kind/to/state/role) recorded at dispatch time; fall back to the
-      // manifest's minimal fields if the context ledger has no entry (older dispatch / write failure).
-      const recorded = await readContext(verdictPath);
       const ctx = {
         id: cardId,
         role,
