@@ -112,9 +112,9 @@ interactive Claude Code session, `pass.mjs` does **not** spawn `claude -p`. Inst
 
 1. Read `promptPath` (the **combined** role+card prompt) — its contents are the subagent prompt.
 2. Spawn the role subagent via the **`Agent` tool, `run_in_background`**, so it shows in the status line.
-   Map `role` → `subagent_type`: write-capable roles (developer/releaser/tester/devops) →
-   `general-purpose`; read-only advisors (code-reviewer/security-advisor/designer/analyst) → `Explore`.
-   Pass `model` from the request. If the request's `worktreeFlag` is non-empty (write-roles only —
+   Use the request's `subagentType` field as the `Agent` tool's `subagent_type` (`dispatch.mjs` resolves it
+   from `board.json`'s `roles` block, else the write/read default). Pass `model` from the request. If the
+   request's `worktreeFlag` is non-empty (write-roles only —
    the same set that gets `--worktree` in external mode), also pass `isolation: "worktree"` to the
    `Agent` tool so this subagent runs in its own git worktree — required so parallel edits under
    `K` > 1 fan-out don't corrupt a shared tree.
