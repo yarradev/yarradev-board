@@ -22,7 +22,17 @@ test("buildDispatchRequest: assembles the full request with action tag and combi
   assert.deepEqual(req, {
     action: "dispatch-request", role: "developer", cardId: "card-1", verdictPath: "/t/v.txt", gen: "7",
     promptPath: "/t/prompt.txt", model: "sonnet", effort: "low", tools: "Read, Bash", worktreeFlag: "--worktree yarradev-card-1",
+    subagentType: undefined,
   });
+});
+
+test("buildDispatchRequest: carries subagentType", () => {
+  const req = buildDispatchRequest({
+    role: "developer", cardId: "c1", verdictPath: "/v", gen: "1", promptPath: "/p",
+    model: "opus", effort: "high", tools: "Read", worktreeFlag: "--worktree yarradev-c1", subagentType: "general-purpose",
+  });
+  assert.equal(req.subagentType, "general-purpose");
+  assert.equal(req.action, "dispatch-request");
 });
 
 function sandbox() {

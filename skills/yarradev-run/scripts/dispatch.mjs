@@ -144,14 +144,16 @@ export function buildCombinedPrompt(roleBody, cardPrompt) {
 }
 
 /**
- * Decide the `--worktree yarradev-<cardId>` flag for a role. The #42 set (developer/releaser/tester/
- * devops) runs in an isolated worktree; read-only advisors (designer/analyst/code-reviewer/...) do NOT.
+ * The `--worktree yarradev-<cardId>` flag for a role, or "". `override` (boolean|undefined) from board.json's
+ * roles block wins when set; otherwise falls back to the WORKTREE_ROLES default (#42/#53).
  * @param {string} role
  * @param {string} cardId
- * @returns {string} the flag string, or "" for read-only roles
+ * @param {boolean} [override]
+ * @returns {string}
  */
-export function worktreeFlagFor(role, cardId) {
-  return WORKTREE_ROLES.has(role) ? `--worktree yarradev-${cardId}` : "";
+export function worktreeFlagFor(role, cardId, override) {
+  const worktree = typeof override === "boolean" ? override : WORKTREE_ROLES.has(role);
+  return worktree ? `--worktree yarradev-${cardId}` : "";
 }
 
 /**
@@ -227,10 +229,10 @@ export function doneEntry({ cardId, verdictPath, gen, role, completedAt }) {
  * Build the native-mode dispatch-request the host conductor fulfills via its Agent tool (GH #51). Pure.
  * `promptPath` is the COMBINED prompt (role instructions + card prompt), so the conductor can pass it
  * straight to the Agent tool. Shape is the contract SKILL.md's native protocol reads.
- * @returns {{action:"dispatch-request", role, cardId, verdictPath, gen, promptPath, model, effort, tools, worktreeFlag}}
+ * @returns {{action:"dispatch-request", role, cardId, verdictPath, gen, promptPath, model, effort, tools, worktreeFlag, subagentType}}
  */
-export function buildDispatchRequest({ role, cardId, verdictPath, gen, promptPath, model, effort, tools, worktreeFlag }) {
-  return { action: "dispatch-request", role, cardId, verdictPath, gen, promptPath, model, effort, tools, worktreeFlag };
+export function buildDispatchRequest({ role, cardId, verdictPath, gen, promptPath, model, effort, tools, worktreeFlag, subagentType }) {
+  return { action: "dispatch-request", role, cardId, verdictPath, gen, promptPath, model, effort, tools, worktreeFlag, subagentType };
 }
 
 const SUBAGENT_TYPES = new Set(["general-purpose", "Explore"]);
