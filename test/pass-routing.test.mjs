@@ -54,6 +54,7 @@ async function route({ verdict, ctx, overrides = {} }) {
     acts: result.acts.map((a) => [a.script, a.args]),
     dispatches: result.dispatches,
     advisorClear422: result.advisorClear422,
+    actFailed: result.actFailed ?? null,
     raw: result,
   };
 }
@@ -510,4 +511,45 @@ test("routeVerdict: an unexpected error in `run` is caught → surfaced, not thr
     },
   });
   assert.ok(r.raw.error instanceof Error, "error surfaced on the result, not thrown");
+});
+
+// ---- GH #54: unhandled act failures must be surfaced as actFailed, not silently discarded ----
+
+test("routeVerdict: advance MOVE that 422s (not advisor_clear) → actFailed set, not silent", async () => {
+  const r = await route({
+    verdict: { status: "advance" },
+    ctx: { id: "c1", to: "done", role: "tester", state: "test", gen: "1" },
+    overrides: { run: async (script) => (script === "move.mjs" ? { ok: false, status: 422, outcome: "bad_act", reason: "no edge" } : { ok: true }) },
+  });
+  assert.ok(r.actFailed, "actFailed must be set on an unhandled MOVE failure");
+  assert.equal(r.actFailed.script, "move.mjs");
+});
+
+test("routeVerdict: advance MOVE with advisor_clear 422 → NOT actFailed (handled path)", async () => {
+  const r = await route({
+    verdict: { status: "advance" },
+    ctx: { id: "c1", to: "done", role: "tester", state: "test", gen: "1" },
+    overrides: { run: async (script) => (script === "move.mjs" ? { ok: false, outcome: "gate_blocked", blocked_by: ["advisor_clear"] } : { ok: true }) },
+  });
+  assert.equal(r.actFailed, null, "advisor_clear is a handled reshape, not an act failure");
+});
+
+test("routeVerdict: happy advance → NOT actFailed", async () => {
+  const r = await route({
+    verdict: { status: "advance", summary: "ok" },
+    ctx: { id: "c1", to: "done", role: "tester", state: "test", gen: "1" },
+    overrides: { run: async () => ({ ok: true }) },
+  });
+  assert.equal(r.actFailed, null);
+});
+
+test("routeVerdict: decomposed barrier MOVE fails after CREATEs → actFailed + escalate", async () => {
+  const r = await route({
+    verdict: { status: "decomposed", children: [{ title: "child A" }] },
+    ctx: { id: "epic1", to: "epic_decompose", role: "analyst", state: "epic_decompose", gen: "1" },
+    overrides: { run: async (script) => (script === "move.mjs" ? { ok: false, status: 422, reason: "no edge" } : { ok: true }) },
+  });
+  assert.ok(r.actFailed, "barrier MOVE failure must set actFailed");
+  assert.equal(r.actFailed.script, "move.mjs");
+  assert.ok(r.acts.some(([s]) => s === "escalate.mjs"), "half-advanced epic must escalate");
 });
