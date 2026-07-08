@@ -75,6 +75,31 @@ export function parseLastVerdict(text) {
 }
 
 /**
+ * Parse the dispatcher's bare error-envelope line (GH #44). When `claude -p` fails (gateway 529 / crash /
+ * empty), `yarradev-dispatch` appends a bare `{"status":"error","error_type":"…","detail":"…"}` line to the
+ * verdict file. This finds the LAST such line so the conductor can distinguish a dispatch error (a gateway
+ * outage) from a genuine no-verdict (a card stall) — instead of masking both as "no parseable block".
+ * Returns null when there's no envelope (the verdict is a real block, or truly empty).
+ * @param {string|null|undefined} text
+ * @returns {{status:"error", error_type:string, detail?:string}|null}
+ */
+export function parseErrorEnvelope(text) {
+  if (!text || typeof text !== "string") return null;
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const t = lines[i].trim();
+    if (!t.startsWith("{") || !t.endsWith("}")) continue;
+    try {
+      const e = JSON.parse(t);
+      if (e && e.status === "error" && typeof e.error_type === "string") return e;
+    } catch {
+      /* not the envelope line — keep scanning */
+    }
+  }
+  return null;
+}
+
+/**
  * Return the `done` manifest entries whose verdictPath is NOT in the consumed ledger. Pure over the manifest
  * + consumed JSONL contents (mirrors in-flight.mjs's walk style). Skips pending, malformed, and entries
  * missing cardId/verdictPath. Preserves manifest order; the consumed-ledger dedups across passes.
@@ -529,11 +554,18 @@ export async function reconcileVerdicts({
       }
 
       if (verdict == null) {
-        // No parseable block → post nothing (SKILL.md: log; the card re-dispatches next pass via dispatchNew).
-        logger(`[pass] reconcile ${verdictPath}: no parseable verdict block; consuming`);
+        // No fenced verdict block. Distinguish a dispatcher error envelope (gateway 529 / crash / empty —
+        // GH #44) from a genuine no-verdict, so an inference-gateway outage doesn't masquerade as a card
+        // stall. Either way: post nothing, clear the lease, consume (the card re-dispatches next pass).
+        const err = parseErrorEnvelope(verdictText);
+        if (err) {
+          logger(`[pass] reconcile ${verdictPath}: dispatch error (${err.error_type})${err.detail ? ` — ${String(err.detail).slice(0, 120)}` : ""}; consuming (surfaced, not a card stall)`);
+        } else {
+          logger(`[pass] reconcile ${verdictPath}: no parseable verdict block; consuming`);
+        }
         await run("clear-lease.mjs", [cardId, gen]);
         await appendConsumed(verdictPath);
-        results.push({ verdictPath, cardId, outcome: "no-parse" });
+        results.push({ verdictPath, cardId, outcome: err ? "dispatch_error" : "no-parse", ...(err ? { error_type: err.error_type } : {}) });
         continue;
       }
 
