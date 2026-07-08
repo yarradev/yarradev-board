@@ -27,8 +27,11 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
 
 ## Config & auth
 - Scripts: `${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts/` (call as `node <that>/<name>.mjs`).
-- Board config (apiBase, doName, lifecycle, pace, budgets, deploy): `…/config/board.json` — copy it from
-  `board.example.json` and edit (a partial `board.json` merges over the template). It holds **no secret**.
+- Board config (apiBase, doName, lifecycle, pace, budgets, deploy, runtime): **`.yarradev/board.json` in the
+  project root** — committed, per-project (one per board, so multi-project setups each carry their own). A
+  partial file merges over the shipped `board.example.json` template (set just `apiBase`/`doName`/`pace` and
+  inherit the lifecycle). It holds **no secret**. (Legacy fallbacks still honored: a plugin-install
+  `…/config/board.json` overlay, and `YDB_API_BASE`/`YDB_DO_NAME` env.)
   `budgets` = `{ bounce_limit, per_edge_overrides }` (thrash caps). `transition_budget`/`respawn_window_ms`
   are not board.json fields — the live transition-count backstop and CI-stall respawn window are
   decide()'s client-side `DEFAULT_BUDGETS` (`orchestrator-core/src/config.ts`).

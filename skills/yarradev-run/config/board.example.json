@@ -33,6 +33,7 @@
   },
   "deploy": { "staging": "" },
   "pace": { "maxCardsPerPass": 1, "claimTtlS": 1800, "minLoopIntervalS": 300 },
+  "runtime": { "inflightStaleS": 7200 },
   "_budgets_note": "transition_budget and respawn_window_ms were struck from budgets below (Phase2a Task 4) — neither is read by the board or the plugin loop; the live transition-count backstop is decide()'s client-side DEFAULT_BUDGETS (orchestrator-core/src/config.ts), and the live CI-stall respawn window is that same DEFAULT_BUDGETS.respawn_window_ms, not this file. bounce_limit/per_edge_overrides below ARE live — they compile into the board's within_budget REJECT gate.",
   "_epic_note": "epic_analysis/epic_decompose/epic_integrating/epic_done (Phase 2b Task 8) are the v1-proven 4-stage epic tier (analyst brief -> decompose -> fan-in barrier -> done); the barrier's promoteAs:\"analyst\" posts the CLAIM-free promote MOVE under the analyst identity, enforced board-side by the epic_integrating->epic_done all_children_terminal gate (acme-main-v2.json). The 7-stage epic vision (Triage->Feasibility->...->Release, hub PO/PM/e2e roles) has zero evidence anywhere and is intentionally excluded — see the Phase 2b runbook's DEFERRED list.",
   "budgets": { "bounce_limit": 3, "per_edge_overrides": {} }

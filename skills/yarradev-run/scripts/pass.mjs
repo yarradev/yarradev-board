@@ -788,7 +788,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   });
 
   const run = makeRun();
-  const dispatch = makeDispatch();
+  const dispatch = makeDispatch(cfg.runtime?.dispatchTool);
   const buildAdvisorPrompt = makeBuildAdvisorPrompt(lifecycle, cfg.doName);
   const getCard = async (id) => {
     try {
