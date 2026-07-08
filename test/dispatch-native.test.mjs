@@ -74,6 +74,40 @@ test("native invoke: prints a dispatch-request, records pending, does NOT block 
   assert.match(manifest, /"status":"pending"[^\n]*"cardId":"card-9"/);
 });
 
+test("native invoke: board.json roles override model/worktree/subagentType in the emitted request", () => {
+  const { dir, promptFile } = sandbox();
+  // agents/developer.md ships model:sonnet, developer is a WORKTREE_ROLES member (worktree default true).
+  // Override: model→opus, worktree→false, subagentType→Explore in a project .yarradev/board.json.
+  const cwd = join(dir, "proj");
+  mkdirSync(join(cwd, ".yarradev"), { recursive: true });
+  writeFileSync(join(cwd, ".yarradev", "board.json"),
+    JSON.stringify({ roles: { developer: { model: "opus", worktree: false, subagentType: "Explore" } } }));
+  const r = spawnSync(process.execPath, [DISPATCH, "developer", "card-ov", promptFile], {
+    encoding: "utf8", cwd,
+    env: { ...process.env, YARRADEV_DISPATCH_MODE: "native", XDG_DATA_HOME: dir, CLAUDE_PLUGIN_ROOT: dir },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const req = JSON.parse(r.stdout.trim().split("\n").pop());
+  assert.equal(req.model, "opus", "model overridden");
+  assert.equal(req.worktreeFlag, "", "worktree:false suppresses the flag");
+  assert.equal(req.subagentType, "Explore", "subagentType overridden");
+});
+
+test("native invoke: absent roles block → agents/*.md model + WORKTREE_ROLES defaults", () => {
+  const { dir, promptFile } = sandbox();
+  const cwd = join(dir, "proj-default");
+  mkdirSync(cwd, { recursive: true });
+  const r = spawnSync(process.execPath, [DISPATCH, "developer", "card-def", promptFile], {
+    encoding: "utf8", cwd,
+    env: { ...process.env, YARRADEV_DISPATCH_MODE: "native", XDG_DATA_HOME: dir, CLAUDE_PLUGIN_ROOT: dir },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const req = JSON.parse(r.stdout.trim().split("\n").pop());
+  assert.equal(req.model, "sonnet", "falls back to agents/developer.md");
+  assert.equal(req.worktreeFlag, "--worktree yarradev-card-def", "WORKTREE_ROLES default");
+  assert.equal(req.subagentType, "general-purpose", "write-role default");
+});
+
 test("--complete: writes the verdict file and appends a done manifest entry", () => {
   const dir = mkdtempSync(join(tmpdir(), "yd-complete-"));
   const verdictPath = join(dir, "verdict.txt");

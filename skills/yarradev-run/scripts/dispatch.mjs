@@ -518,7 +518,10 @@ function invoke({ role, cardId, promptFile, gen = "" }) {
   }
 
   const agentContent = readFileSync(agentFile, "utf8");
-  const { model, effort, tools, body } = parseFrontmatter(agentContent);
+  const { model: fmModel, effort: fmEffort, tools, body } = parseFrontmatter(agentContent);
+  const overrides = loadRoleOverrides()[role] ?? {};
+  const model = overrides.model ?? fmModel;
+  const effort = overrides.effort ?? fmEffort;
   const cardPrompt = readFileSync(promptFile, "utf8");
   const combinedPrompt = buildCombinedPrompt(body, cardPrompt);
 
@@ -530,7 +533,8 @@ function invoke({ role, cardId, promptFile, gen = "" }) {
   const verdictPath = join(tmpDir, "verdict.txt");
   writeFileSync(combinedPromptPath, combinedPrompt);
 
-  const worktreeFlag = worktreeFlagFor(role, cardId);
+  const worktreeFlag = worktreeFlagFor(role, cardId, overrides.worktree);
+  const subagentType = overrides.subagentType ?? (WORKTREE_ROLES.has(role) ? "general-purpose" : "Explore");
   const origPwd = process.cwd();
   const manifestPath = MANIFEST_FILE;
   const dispatchedAt = utcNow();
@@ -547,7 +551,7 @@ function invoke({ role, cardId, promptFile, gen = "" }) {
   // already recorded above (so the in-flight filter + reconcile behave identically to external mode).
   if (DISPATCH_MODE === "native") {
     process.stdout.write(
-      JSON.stringify(buildDispatchRequest({ role, cardId, verdictPath, gen, promptPath: combinedPromptPath, model, effort, tools, worktreeFlag })) + "\n",
+      JSON.stringify(buildDispatchRequest({ role, cardId, verdictPath, gen, promptPath: combinedPromptPath, model, effort, tools, worktreeFlag, subagentType })) + "\n",
     );
     return verdictPath;
   }
