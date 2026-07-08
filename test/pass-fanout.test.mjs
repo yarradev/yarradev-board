@@ -28,3 +28,49 @@ test("HALF_OPEN: at most one probe, still headroom-clamped", () => {
 test("OPEN: dispatch nothing", () => {
   assert.equal(computeEffectiveK({ K: 3, maxConcurrent: 10, inFlightCount: 0, breakerState: "OPEN" }), 0);
 });
+
+// ---- advanceBreaker ---- (now/breakerUntil are epoch ms; cooldownS in seconds)
+const T0 = Date.UTC(2026, 6, 8, 12, 0, 0); // fixed clock
+const COOLDOWN_S = 600;
+
+test("CLOSED + 529 → OPEN, arms cooldown", () => {
+  const b = advanceBreaker({ state: "CLOSED", breakerUntil: 0, saw529: true, now: T0, cooldownS: COOLDOWN_S });
+  assert.deepEqual(b, { state: "OPEN", breakerUntil: T0 + COOLDOWN_S * 1000 });
+});
+test("CLOSED + clean → stays CLOSED", () => {
+  assert.deepEqual(
+    advanceBreaker({ state: "CLOSED", breakerUntil: 0, saw529: false, now: T0, cooldownS: COOLDOWN_S }),
+    { state: "CLOSED", breakerUntil: 0 },
+  );
+});
+test("OPEN before cooldown expiry → stays OPEN", () => {
+  const until = T0 + COOLDOWN_S * 1000;
+  assert.deepEqual(
+    advanceBreaker({ state: "OPEN", breakerUntil: until, saw529: false, now: T0 + 1000, cooldownS: COOLDOWN_S }),
+    { state: "OPEN", breakerUntil: until },
+  );
+});
+test("OPEN at cooldown expiry → HALF_OPEN", () => {
+  const until = T0 + COOLDOWN_S * 1000;
+  assert.deepEqual(
+    advanceBreaker({ state: "OPEN", breakerUntil: until, saw529: false, now: until, cooldownS: COOLDOWN_S }),
+    { state: "HALF_OPEN", breakerUntil: until },
+  );
+});
+test("HALF_OPEN + clean → CLOSED (probe survived)", () => {
+  assert.deepEqual(
+    advanceBreaker({ state: "HALF_OPEN", breakerUntil: T0, saw529: false, now: T0 + 5000, cooldownS: COOLDOWN_S }),
+    { state: "CLOSED", breakerUntil: T0 },
+  );
+});
+test("HALF_OPEN + 529 → re-arm OPEN", () => {
+  const now = T0 + 5000;
+  assert.deepEqual(
+    advanceBreaker({ state: "HALF_OPEN", breakerUntil: T0, saw529: true, now, cooldownS: COOLDOWN_S }),
+    { state: "OPEN", breakerUntil: now + COOLDOWN_S * 1000 },
+  );
+});
+test("missing breakerUntil defaults to 0", () => {
+  const b = advanceBreaker({ state: "CLOSED", saw529: false, now: T0, cooldownS: COOLDOWN_S });
+  assert.deepEqual(b, { state: "CLOSED", breakerUntil: 0 });
+});

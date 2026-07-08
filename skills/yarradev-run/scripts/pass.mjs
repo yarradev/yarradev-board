@@ -190,8 +190,23 @@ export function computeEffectiveK({ K, maxConcurrent, inFlightCount, breakerStat
   return Math.max(0, Math.min(cap, maxConcurrent - inFlightCount));
 }
 
-// TODO: Task 2 — advanceBreaker
-export function advanceBreaker() {}
+/**
+ * Advance the 529 circuit breaker one step. Evaluated each pass AFTER reconcile, so `saw529` reflects this
+ * pass's reconciled verdicts. Cooldown + half-open semantics (now/breakerUntil epoch ms, cooldownS seconds):
+ *   - saw529 (from ANY state)      → OPEN, breakerUntil = now + cooldownS*1000 (trip / re-arm)
+ *   - OPEN and now ≥ breakerUntil  → HALF_OPEN (allow one probe next pass)
+ *   - HALF_OPEN and !saw529        → CLOSED (probe pass came back clean)
+ *   - otherwise                    → unchanged
+ * Pure — no clock read, no I/O.
+ * @param {{state:"CLOSED"|"HALF_OPEN"|"OPEN", breakerUntil?:number, saw529:boolean, now:number, cooldownS:number}} o
+ * @returns {{state:"CLOSED"|"HALF_OPEN"|"OPEN", breakerUntil:number}}
+ */
+export function advanceBreaker({ state, breakerUntil = 0, saw529, now, cooldownS }) {
+  if (saw529) return { state: "OPEN", breakerUntil: now + cooldownS * 1000 };
+  if (state === "OPEN" && now >= breakerUntil) return { state: "HALF_OPEN", breakerUntil };
+  if (state === "HALF_OPEN") return { state: "CLOSED", breakerUntil };
+  return { state, breakerUntil };
+}
 
 // TODO: Task 3 — decideDispatch
 export function decideDispatch() {}
