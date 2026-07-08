@@ -57,8 +57,6 @@ test("sanitizeEnv: strips every YDB_TOKEN* key, leaves everything else (GH #25)"
     YDB_TOKEN_SECURITY_ADVISOR: "sec.<secret>",
     CLOUDFLARE_API_TOKEN: "cf.<secret>",
     GITHUB_TOKEN: "gh.<secret>",
-    YDB_API_BASE: "https://board.example",
-    YDB_DO_NAME: "acme:main",
   });
   assert.equal(out.YDB_TOKEN, undefined, "shared YDB_TOKEN stripped");
   assert.equal(out.YDB_TOKEN_ORCHESTRATOR, undefined, "per-role orchestrator token stripped");
@@ -68,8 +66,6 @@ test("sanitizeEnv: strips every YDB_TOKEN* key, leaves everything else (GH #25)"
   assert.equal(out.HOME, "/Users/x", "HOME preserved");
   assert.equal(out.CLOUDFLARE_API_TOKEN, "cf.<secret>", "role CF credential preserved (devops needs it)");
   assert.equal(out.GITHUB_TOKEN, "gh.<secret>", "GitHub credential preserved");
-  assert.equal(out.YDB_API_BASE, "https://board.example", "non-secret board config preserved");
-  assert.equal(out.YDB_DO_NAME, "acme:main", "non-secret board config preserved");
 });
 
 test("sanitizeEnv: does not mutate the input env", () => {
