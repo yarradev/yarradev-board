@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mergeRoles, sanitizeRoles, loadRoleOverrides } from "../skills/yarradev-run/scripts/dispatch.mjs";
+import { mergeRoles, sanitizeRoles, loadRoleOverrides, readJsonOr } from "../skills/yarradev-run/scripts/dispatch.mjs";
 
 test("mergeRoles: higher layer overrides per field, lower fields survive", () => {
   const out = mergeRoles(
@@ -49,4 +49,12 @@ test("loadRoleOverrides: merges .roles across example/install/project layers", (
 test("loadRoleOverrides: no config files → {}", () => {
   const dir = mkdtempSync(join(tmpdir(), "yd-roles-empty-"));
   assert.deepEqual(loadRoleOverrides({ configDir: join(dir, "config"), cwd: join(dir, "proj") }), {});
+});
+
+test("readJsonOr: malformed JSON (present-but-invalid) is non-fatal → {}, not thrown", () => {
+  const dir = mkdtempSync(join(tmpdir(), "yd-roles-malformed-"));
+  const badPath = join(dir, "board.json");
+  writeFileSync(badPath, "{ \"roles\": { \"developer\": { \"model\": \"opus\", } } }"); // trailing comma
+  assert.doesNotThrow(() => readJsonOr(badPath));
+  assert.deepEqual(readJsonOr(badPath), {});
 });

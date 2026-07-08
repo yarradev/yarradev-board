@@ -278,11 +278,18 @@ export function sanitizeRoles(merged) {
   return { cleaned, warnings };
 }
 
-/** Read a JSON file's parsed content, or {} if absent/unreadable. */
-function readJsonOr(path) {
+/**
+ * Read a JSON file's parsed content, or {} if absent. Non-fatal by design (dispatch hot path — must
+ * never throw), but a PRESENT-and-malformed file (e.g. a trailing comma) is a real misconfiguration,
+ * not "no config" — warn to stderr so it isn't silently mistaken for an absent file (cf.
+ * plugin-io.mjs's readJsonIfPresent, which surfaces the same case by throwing).
+ */
+export function readJsonOr(path) {
+  if (!existsSync(path)) return {};
   try {
-    return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
-  } catch {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch (e) {
+    process.stderr.write(`dispatch.mjs: invalid JSON in ${path}: ${e.message} — ignoring (treating as {})\n`);
     return {};
   }
 }

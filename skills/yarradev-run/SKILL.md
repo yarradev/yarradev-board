@@ -117,7 +117,10 @@ interactive Claude Code session, `pass.mjs` does **not** spawn `claude -p`. Inst
    request's `worktreeFlag` is non-empty (write-roles only —
    the same set that gets `--worktree` in external mode), also pass `isolation: "worktree"` to the
    `Agent` tool so this subagent runs in its own git worktree — required so parallel edits under
-   `K` > 1 fan-out don't corrupt a shared tree.
+   `K` > 1 fan-out don't corrupt a shared tree. ⚠️ A project's `board.json` `roles` block (GH #53)
+   can set `worktree: false` per role — doing so on a write-capable role (developer/releaser/
+   tester/devops) under `maxConcurrent > 1` disables this isolation, so parallel write-role
+   subagents edit the SAME working tree and corrupt it.
 3. When the agent completes (its `task-notification`), take its **final message** (the verdict block) and
    land it: `printf '%s' "<agent final message>" | node $S/dispatch.mjs --complete <verdictPath> <cardId> --gen <gen> --role <role>`.
    This writes the verdict file + `done` manifest entry — exactly what the next reconcile pass consumes.
