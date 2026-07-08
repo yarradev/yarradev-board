@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Turn on multi-card fan-out (`pace.maxCardsPerPass > 1`) with a total-concurrency ceiling and a z.ai-529 circuit breaker, so the conductor dispatches several cards per pass without corrupting board state or slamming an overloaded gateway.
+**Goal:** Turn on multi-card fan-out (`pace.maxCardsPerPass > 1`) with a total-concurrency ceiling and a gateway-529 circuit breaker, so the conductor dispatches several cards per pass without corrupting board state or slamming an overloaded gateway.
 
 **Architecture:** Three new **pure** functions in `pass.mjs` (`computeEffectiveK`, `advanceBreaker`, `decideDispatch`) compute this pass's dispatch budget from the reconcile results, the persisted breaker state, and the in-flight count. `pass.mjs` main() reads/writes a small `breaker.json` state file and passes the computed `effectiveK` to the existing `dispatchNew`. No changes to the dispatch mechanism, board, or reconcile routing — the fan-out loop already exists (#28), we're just bounding its input.
 
@@ -506,8 +506,8 @@ Line 440–441 — replace:
 with:
 ```
 - **Bounded fan-out.** A card advances at most one stage per pass; the next pass re-reconciles. Each pass
-  dispatches up to `effectiveK = min(pace.maxCardsPerPass, pace.maxConcurrent − in-flight)`. A z.ai `529`
-  (surfaced by reconcile as `gateway_529`) trips a circuit breaker: OPEN → dispatch 0 for `breakerCooldownS`,
+  dispatches up to `effectiveK = min(pace.maxCardsPerPass, pace.maxConcurrent − in-flight)`. A gateway `529`
+  (overloaded — surfaced by reconcile as `gateway_529`) trips a circuit breaker: OPEN → dispatch 0 for `breakerCooldownS`,
   then HALF_OPEN → one probe, then CLOSED on a clean pass. Set `maxCardsPerPass:1` to force single-threaded.
 ```
 
