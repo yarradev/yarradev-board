@@ -225,6 +225,20 @@ export function decideDispatch({ recResults, prevBreaker, inFlightCount, K, maxC
   return { effectiveK, breaker, saw529 };
 }
 
+/**
+ * Advance the pass-count context-clear valve. Pure. `content` is the raw PASS_COUNT file text (coerced to 0
+ * when missing/blank/garbage). Returns the next count and whether it has reached `threshold` (the point at
+ * which the caller writes prep-clear). Runs on EVERY non-prep-clear pass — including breaker-open/at-capacity
+ * skips (GH #49) — so a prolonged gateway outage still trips the valve rather than counting only dispatch passes.
+ * @param {string|number|undefined} content raw PASS_COUNT file content
+ * @param {number} [threshold=40]
+ * @returns {{next:number, reachedThreshold:boolean}}
+ */
+export function advancePassCount(content, threshold = 40) {
+  const next = (Number(content) || 0) + 1;
+  return { next, reachedThreshold: next >= threshold };
+}
+
 /** Detect a board "bounce budget exhausted" 422 on a REJECT (thrash cap → escalate, don't re-loop). */
 function isBounceBudget(r) {
   if (r?.outcome !== "gate_blocked") return false;
@@ -1029,14 +1043,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       },
     });
     process.stdout.write(JSON.stringify({ phase: "dispatch", ...dispatchOut }) + "\n");
+  }
 
-    // Pass-count fallback (when statusline CTX% isn't available): ~3.3h at 5-min intervals → prep-clear,
-    // so the next pass reconciles-only and the wrapper restarts with clean context.
+  // Pass-count fallback (when statusline CTX% isn't available): ~3.3h at 5-min intervals → prep-clear, so the
+  // next pass reconciles-only and the wrapper restarts with clean context. Runs on every non-prep-clear pass —
+  // including breaker-open/at-capacity skips (GH #49), so a prolonged gateway outage still trips the valve.
+  if (!skipDispatch) {
     try {
-      const count = Number(readFileSync(PASS_COUNT, "utf8")) || 0;
-      const next = count + 1;
+      const { next, reachedThreshold } = advancePassCount(readFileSync(PASS_COUNT, "utf8"));
       writeFileSync(PASS_COUNT, String(next));
-      if (next >= 40 && !existsSync(PREP_CLEAR)) {
+      if (reachedThreshold && !existsSync(PREP_CLEAR)) {
         writeFileSync(PREP_CLEAR, "");
         process.stderr.write("[pass] pass-count reached 40 → wrote prep-clear (next pass reconciles-only + exits)\n");
       }
