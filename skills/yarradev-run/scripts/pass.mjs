@@ -860,23 +860,31 @@ export function makeDispatch(toolPath, mode = "external") {
   };
 }
 
-/** Build the real advisor-prompt writer (the 422 async-dispatch path). Minimal V1 — repo/branch/head/watch_paths. */
-export function makeBuildAdvisorPrompt(lifecycle, doName) {
-  return (ctx, advisorRole) => {
+/** Build the real advisor-prompt writer (the 422 async-dispatch path). Sources `head` from the card's linked
+ * PR (GH #55 — ctx is empty for tester-owned stages); the advisor self-discovers its branch by cardId. */
+export function makeBuildAdvisorPrompt(lifecycle, doName, getCard) {
+  return async (ctx, advisorRole) => {
     const advisor = lifecycle?.[ctx.state]?.advisors?.find((a) => a?.role === advisorRole);
     const watchPaths = Array.isArray(advisor?.watch_paths) ? advisor.watch_paths : [];
+    let head = ctx.head ?? "";
+    try {
+      const card = getCard ? await getCard(ctx.id) : null;
+      if (card?.linked_head_sha) head = card.linked_head_sha;
+    } catch {
+      /* best-effort: fall back to ctx.head */
+    }
     const lines = [
       "=== Advisor review ===",
       `doName: ${doName ?? ""}`,
       `cardId: ${ctx.id}`,
       `state: ${ctx.state}`,
       `repo: ${ctx.repo ?? ""}`,
-      `branch: ${ctx.branch ?? ""}`,
-      `head: ${ctx.head ?? ""}`,
+      `head: ${head}`,
       `role: ${advisorRole}`,
       `watch_paths: ${JSON.stringify(watchPaths)}`,
       "",
-      "Review the linked head for this stage's concerns. Post a verdict: {status, head, reason?}.",
+      `Find the branch for card ${ctx.id} yourself (e.g. git branch -r --list 'origin/*${ctx.id}*'), review the`,
+      "linked head above for this stage's concerns, then post a verdict: {status, head, reason?}.",
     ];
     const path = `/tmp/yarradev-prompt-${ctx.id}-${advisorRole}.txt`;
     writeFileSync(path, lines.join("\n") + "\n");
@@ -949,7 +957,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
   const run = makeRun();
   const dispatch = makeDispatch(cfg.runtime?.dispatchTool, cfg.runtime?.dispatchMode ?? "external");
-  const buildAdvisorPrompt = makeBuildAdvisorPrompt(lifecycle, cfg.doName);
   const getCard = async (id) => {
     try {
       return await client.getEnriched(id);
@@ -957,6 +964,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       return null;
     }
   };
+  const buildAdvisorPrompt = makeBuildAdvisorPrompt(lifecycle, cfg.doName, getCard);
 
   // --- Phase 1: reconcile landed verdicts (from this pass AND prior-pass dispatches still running) ---
   const manifestContent = readIfPresent(manifestPath);
