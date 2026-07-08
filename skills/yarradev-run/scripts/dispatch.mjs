@@ -144,14 +144,16 @@ export function buildCombinedPrompt(roleBody, cardPrompt) {
 }
 
 /**
- * Decide the `--worktree yarradev-<cardId>` flag for a role. The #42 set (developer/releaser/tester/
- * devops) runs in an isolated worktree; read-only advisors (designer/analyst/code-reviewer/...) do NOT.
+ * The `--worktree yarradev-<cardId>` flag for a role, or "". `override` (boolean|undefined) from board.json's
+ * roles block wins when set; otherwise falls back to the WORKTREE_ROLES default (#42/#53).
  * @param {string} role
  * @param {string} cardId
- * @returns {string} the flag string, or "" for read-only roles
+ * @param {boolean} [override]
+ * @returns {string}
  */
-export function worktreeFlagFor(role, cardId) {
-  return WORKTREE_ROLES.has(role) ? `--worktree yarradev-${cardId}` : "";
+export function worktreeFlagFor(role, cardId, override) {
+  const worktree = typeof override === "boolean" ? override : WORKTREE_ROLES.has(role);
+  return worktree ? `--worktree yarradev-${cardId}` : "";
 }
 
 /**
@@ -227,10 +229,85 @@ export function doneEntry({ cardId, verdictPath, gen, role, completedAt }) {
  * Build the native-mode dispatch-request the host conductor fulfills via its Agent tool (GH #51). Pure.
  * `promptPath` is the COMBINED prompt (role instructions + card prompt), so the conductor can pass it
  * straight to the Agent tool. Shape is the contract SKILL.md's native protocol reads.
- * @returns {{action:"dispatch-request", role, cardId, verdictPath, gen, promptPath, model, effort, tools, worktreeFlag}}
+ * @returns {{action:"dispatch-request", role, cardId, verdictPath, gen, promptPath, model, effort, tools, worktreeFlag, subagentType}}
  */
-export function buildDispatchRequest({ role, cardId, verdictPath, gen, promptPath, model, effort, tools, worktreeFlag }) {
-  return { action: "dispatch-request", role, cardId, verdictPath, gen, promptPath, model, effort, tools, worktreeFlag };
+export function buildDispatchRequest({ role, cardId, verdictPath, gen, promptPath, model, effort, tools, worktreeFlag, subagentType }) {
+  return { action: "dispatch-request", role, cardId, verdictPath, gen, promptPath, model, effort, tools, worktreeFlag, subagentType };
+}
+
+const SUBAGENT_TYPES = new Set(["general-purpose", "Explore"]);
+
+/**
+ * Deep per-role/per-field merge of the `roles` blocks from the config layers (lowest→highest). Pure.
+ * @returns {Object<string, {model?:string, effort?:string, worktree?:boolean, subagentType?:string}>}
+ */
+export function mergeRoles(baseRoles, installRoles, projectRoles) {
+  const layers = [baseRoles, installRoles, projectRoles].map((r) => (r && typeof r === "object" ? r : {}));
+  const out = {};
+  for (const layer of layers) {
+    for (const [role, entry] of Object.entries(layer)) {
+      if (entry && typeof entry === "object") out[role] = { ...(out[role] ?? {}), ...entry };
+    }
+  }
+  return out;
+}
+
+/**
+ * Drop invalid fields from a merged roles map (invalid subagentType / non-boolean worktree), keeping valid
+ * model/effort/worktree/subagentType. Pure. Returns the cleaned map + a warning per dropped field. #53.
+ * @returns {{cleaned:Object, warnings:string[]}}
+ */
+export function sanitizeRoles(merged) {
+  const cleaned = {};
+  const warnings = [];
+  for (const [role, entry] of Object.entries(merged ?? {})) {
+    if (!entry || typeof entry !== "object") continue;
+    const c = {};
+    if (typeof entry.model === "string") c.model = entry.model;
+    if (typeof entry.effort === "string") c.effort = entry.effort;
+    if ("worktree" in entry) {
+      if (typeof entry.worktree === "boolean") c.worktree = entry.worktree;
+      else warnings.push(`roles.${role}.worktree must be boolean; ignoring ${JSON.stringify(entry.worktree)}`);
+    }
+    if ("subagentType" in entry) {
+      if (SUBAGENT_TYPES.has(entry.subagentType)) c.subagentType = entry.subagentType;
+      else warnings.push(`roles.${role}.subagentType must be one of ${[...SUBAGENT_TYPES].join("/")}; ignoring ${JSON.stringify(entry.subagentType)}`);
+    }
+    cleaned[role] = c;
+  }
+  return { cleaned, warnings };
+}
+
+/**
+ * Read a JSON file's parsed content, or {} if absent. Non-fatal by design (dispatch hot path — must
+ * never throw), but a PRESENT-and-malformed file (e.g. a trailing comma) is a real misconfiguration,
+ * not "no config" — warn to stderr so it isn't silently mistaken for an absent file (cf.
+ * plugin-io.mjs's readJsonIfPresent, which surfaces the same case by throwing).
+ */
+export function readJsonOr(path) {
+  if (!existsSync(path)) return {};
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch (e) {
+    process.stderr.write(`dispatch.mjs: invalid JSON in ${path}: ${e.message} — ignoring (treating as {})\n`);
+    return {};
+  }
+}
+
+/**
+ * Load the merged, sanitized per-role overrides from the config layers (GH #53). Self-contained (no board
+ * client). `opts.configDir` defaults to `<dispatch.mjs dir>/../config`; `opts.cwd` to `process.cwd()`.
+ * @returns {Object<string, {model?:string, effort?:string, worktree?:boolean, subagentType?:string}>}
+ */
+export function loadRoleOverrides(opts = {}) {
+  const configDir = opts.configDir ?? join(dirname(__filename), "..", "config");
+  const cwd = opts.cwd ?? process.cwd();
+  const base = readJsonOr(join(configDir, "board.example.json")).roles;
+  const install = readJsonOr(join(configDir, "board.json")).roles;
+  const project = readJsonOr(join(cwd, ".yarradev", "board.json")).roles;
+  const { cleaned, warnings } = sanitizeRoles(mergeRoles(base, install, project));
+  for (const w of warnings) process.stderr.write(`dispatch.mjs: ${w}\n`);
+  return cleaned;
 }
 
 /**
@@ -448,7 +525,10 @@ function invoke({ role, cardId, promptFile, gen = "" }) {
   }
 
   const agentContent = readFileSync(agentFile, "utf8");
-  const { model, effort, tools, body } = parseFrontmatter(agentContent);
+  const { model: fmModel, effort: fmEffort, tools, body } = parseFrontmatter(agentContent);
+  const overrides = loadRoleOverrides()[role] ?? {};
+  const model = overrides.model ?? fmModel;
+  const effort = overrides.effort ?? fmEffort;
   const cardPrompt = readFileSync(promptFile, "utf8");
   const combinedPrompt = buildCombinedPrompt(body, cardPrompt);
 
@@ -460,7 +540,8 @@ function invoke({ role, cardId, promptFile, gen = "" }) {
   const verdictPath = join(tmpDir, "verdict.txt");
   writeFileSync(combinedPromptPath, combinedPrompt);
 
-  const worktreeFlag = worktreeFlagFor(role, cardId);
+  const worktreeFlag = worktreeFlagFor(role, cardId, overrides.worktree);
+  const subagentType = overrides.subagentType ?? (WORKTREE_ROLES.has(role) ? "general-purpose" : "Explore");
   const origPwd = process.cwd();
   const manifestPath = MANIFEST_FILE;
   const dispatchedAt = utcNow();
@@ -477,7 +558,7 @@ function invoke({ role, cardId, promptFile, gen = "" }) {
   // already recorded above (so the in-flight filter + reconcile behave identically to external mode).
   if (DISPATCH_MODE === "native") {
     process.stdout.write(
-      JSON.stringify(buildDispatchRequest({ role, cardId, verdictPath, gen, promptPath: combinedPromptPath, model, effort, tools, worktreeFlag })) + "\n",
+      JSON.stringify(buildDispatchRequest({ role, cardId, verdictPath, gen, promptPath: combinedPromptPath, model, effort, tools, worktreeFlag, subagentType })) + "\n",
     );
     return verdictPath;
   }

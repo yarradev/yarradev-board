@@ -112,12 +112,15 @@ interactive Claude Code session, `pass.mjs` does **not** spawn `claude -p`. Inst
 
 1. Read `promptPath` (the **combined** role+card prompt) — its contents are the subagent prompt.
 2. Spawn the role subagent via the **`Agent` tool, `run_in_background`**, so it shows in the status line.
-   Map `role` → `subagent_type`: write-capable roles (developer/releaser/tester/devops) →
-   `general-purpose`; read-only advisors (code-reviewer/security-advisor/designer/analyst) → `Explore`.
-   Pass `model` from the request. If the request's `worktreeFlag` is non-empty (write-roles only —
+   Use the request's `subagentType` field as the `Agent` tool's `subagent_type` (`dispatch.mjs` resolves it
+   from `board.json`'s `roles` block, else the write/read default). Pass `model` from the request. If the
+   request's `worktreeFlag` is non-empty (write-roles only —
    the same set that gets `--worktree` in external mode), also pass `isolation: "worktree"` to the
    `Agent` tool so this subagent runs in its own git worktree — required so parallel edits under
-   `K` > 1 fan-out don't corrupt a shared tree.
+   `K` > 1 fan-out don't corrupt a shared tree. ⚠️ A project's `board.json` `roles` block (GH #53)
+   can set `worktree: false` per role — doing so on a write-capable role (developer/releaser/
+   tester/devops) under `maxConcurrent > 1` disables this isolation, so parallel write-role
+   subagents edit the SAME working tree and corrupt it.
 3. When the agent completes (its `task-notification`), take its **final message** (the verdict block) and
    land it: `printf '%s' "<agent final message>" | node $S/dispatch.mjs --complete <verdictPath> <cardId> --gen <gen> --role <role>`.
    This writes the verdict file + `done` manifest entry — exactly what the next reconcile pass consumes.

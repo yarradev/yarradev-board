@@ -22,7 +22,17 @@ test("buildDispatchRequest: assembles the full request with action tag and combi
   assert.deepEqual(req, {
     action: "dispatch-request", role: "developer", cardId: "card-1", verdictPath: "/t/v.txt", gen: "7",
     promptPath: "/t/prompt.txt", model: "sonnet", effort: "low", tools: "Read, Bash", worktreeFlag: "--worktree yarradev-card-1",
+    subagentType: undefined,
   });
+});
+
+test("buildDispatchRequest: carries subagentType", () => {
+  const req = buildDispatchRequest({
+    role: "developer", cardId: "c1", verdictPath: "/v", gen: "1", promptPath: "/p",
+    model: "opus", effort: "high", tools: "Read", worktreeFlag: "--worktree yarradev-c1", subagentType: "general-purpose",
+  });
+  assert.equal(req.subagentType, "general-purpose");
+  assert.equal(req.action, "dispatch-request");
 });
 
 function sandbox() {
@@ -62,6 +72,40 @@ test("native invoke: prints a dispatch-request, records pending, does NOT block 
   // used verbatim — no "claude-bg" subdir appended); MANIFEST_FILE = join(STATE_DIR, "dispatch-manifest.jsonl").
   const manifest = readFileSync(join(dir, "dispatch-manifest.jsonl"), "utf8");
   assert.match(manifest, /"status":"pending"[^\n]*"cardId":"card-9"/);
+});
+
+test("native invoke: board.json roles override model/worktree/subagentType in the emitted request", () => {
+  const { dir, promptFile } = sandbox();
+  // agents/developer.md ships model:sonnet, developer is a WORKTREE_ROLES member (worktree default true).
+  // Override: model→opus, worktree→false, subagentType→Explore in a project .yarradev/board.json.
+  const cwd = join(dir, "proj");
+  mkdirSync(join(cwd, ".yarradev"), { recursive: true });
+  writeFileSync(join(cwd, ".yarradev", "board.json"),
+    JSON.stringify({ roles: { developer: { model: "opus", worktree: false, subagentType: "Explore" } } }));
+  const r = spawnSync(process.execPath, [DISPATCH, "developer", "card-ov", promptFile], {
+    encoding: "utf8", cwd,
+    env: { ...process.env, YARRADEV_DISPATCH_MODE: "native", XDG_DATA_HOME: dir, CLAUDE_PLUGIN_ROOT: dir },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const req = JSON.parse(r.stdout.trim().split("\n").pop());
+  assert.equal(req.model, "opus", "model overridden");
+  assert.equal(req.worktreeFlag, "", "worktree:false suppresses the flag");
+  assert.equal(req.subagentType, "Explore", "subagentType overridden");
+});
+
+test("native invoke: absent roles block → agents/*.md model + WORKTREE_ROLES defaults", () => {
+  const { dir, promptFile } = sandbox();
+  const cwd = join(dir, "proj-default");
+  mkdirSync(cwd, { recursive: true });
+  const r = spawnSync(process.execPath, [DISPATCH, "developer", "card-def", promptFile], {
+    encoding: "utf8", cwd,
+    env: { ...process.env, YARRADEV_DISPATCH_MODE: "native", XDG_DATA_HOME: dir, CLAUDE_PLUGIN_ROOT: dir },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const req = JSON.parse(r.stdout.trim().split("\n").pop());
+  assert.equal(req.model, "sonnet", "falls back to agents/developer.md");
+  assert.equal(req.worktreeFlag, "--worktree yarradev-card-def", "WORKTREE_ROLES default");
+  assert.equal(req.subagentType, "general-purpose", "write-role default");
 });
 
 test("--complete: writes the verdict file and appends a done manifest entry", () => {

@@ -152,6 +152,17 @@ test("worktreeFlagFor: the cardId is interpolated into the worktree name", () =>
   assert.equal(worktreeFlagFor("developer", "card-42"), "--worktree yarradev-card-42");
 });
 
+test("worktreeFlagFor: explicit override=true forces the flag even for a read-only role", () => {
+  assert.equal(worktreeFlagFor("designer", "c1", true), "--worktree yarradev-c1");
+});
+test("worktreeFlagFor: explicit override=false suppresses the flag even for a write role", () => {
+  assert.equal(worktreeFlagFor("developer", "c1", false), "");
+});
+test("worktreeFlagFor: override=undefined keeps the WORKTREE_ROLES default", () => {
+  assert.equal(worktreeFlagFor("developer", "c1", undefined), "--worktree yarradev-c1");
+  assert.equal(worktreeFlagFor("designer", "c1", undefined), "");
+});
+
 // ============================================================================
 // 4. 529 detection + error classification (gateway_529 / crash / empty)
 // ============================================================================
