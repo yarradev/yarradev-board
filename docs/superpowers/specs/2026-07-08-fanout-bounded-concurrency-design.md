@@ -23,7 +23,7 @@ Board correctness is **safe by construction** at N>1. Every shared-state surface
 | Epic fan-in counters | Server-side DO, `all_children_terminal` barrier is transactional | board-side |
 
 Residual risks are **load/economics, not correctness**:
-1. **z.ai 529 thundering herd** — N concurrent `claude -p`, each retrying 529 on an uncoordinated 20→40→80s backoff.
+1. **Gateway 529 thundering herd** — N concurrent `claude -p`, each retrying 529 (overloaded) on an uncoordinated 20→40→80s backoff.
 2. **PR-merge conflicts** — logically-independent cards can still touch overlapping files (surfaces at merge, not runtime).
 3. **Total in-flight ≠ K** — K bounds *new* dispatches per pass; in-flight accumulates across passes when cards outlive the pass interval. Real resource load is the total in-flight count.
 

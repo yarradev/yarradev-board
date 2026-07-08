@@ -439,8 +439,8 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
 
 ## Discipline & safety
 - **Bounded fan-out.** A card advances at most one stage per pass; the next pass re-reconciles. Each pass
-  dispatches up to `effectiveK = min(pace.maxCardsPerPass, pace.maxConcurrent − in-flight)`. A z.ai `529`
-  (surfaced by reconcile as `gateway_529`) trips a circuit breaker: OPEN → dispatch 0 for `breakerCooldownS`,
+  dispatches up to `effectiveK = min(pace.maxCardsPerPass, pace.maxConcurrent − in-flight)`. A gateway `529`
+  (overloaded — surfaced by reconcile as `gateway_529`) trips a circuit breaker: OPEN → dispatch 0 for `breakerCooldownS`,
   then HALF_OPEN → one probe, then CLOSED on a clean pass. Set `maxCardsPerPass:1` to force single-threaded.
 - **Never re-dispatch a card whose subagent is still running.** A long stage owner can outlast the lease
   (lease-TTL expiry bumps `current_gen`, so `dispatch-and-wait` times out near the TTL and you CLEAR_LEASE).
