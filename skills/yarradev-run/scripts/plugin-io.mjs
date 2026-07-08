@@ -38,20 +38,25 @@ function readJsonIfPresent(path) {
 }
 
 export function loadConfig() {
-  // board.example.json is the committed template (base); board.json (gitignored) overlays it field-by-field,
-  // so a partial board.json (e.g. just apiBase/doName) still inherits lifecycle + pace from the template.
+  // Resolution (highest priority last): shipped template (board.example.json) ← legacy plugin-install
+  // board.json (gitignored) ← PROJECT-LOCAL .yarradev/board.json (committed, per-project — the consumer's
+  // config home for multi-board setups) ← YDB_API_BASE/YDB_DO_NAME env (test/dev escape hatch). A partial
+  // overlay at any layer inherits the rest from the template (lifecycle/pace/etc.).
   const base = readJsonIfPresent(join(CONFIG_DIR, "board.example.json")) ?? {};
-  const over = readJsonIfPresent(join(CONFIG_DIR, "board.json")) ?? {};
+  const install = readJsonIfPresent(join(CONFIG_DIR, "board.json")) ?? {};
+  const project = readJsonIfPresent(join(process.cwd(), ".yarradev", "board.json")) ?? {};
   const cfg = {
     ...base,
-    ...over,
-    pace: { ...(base.pace ?? {}), ...(over.pace ?? {}) },
-    lifecycle: over.lifecycle ?? base.lifecycle,
+    ...install,
+    ...project,
+    pace: { ...(base.pace ?? {}), ...(install.pace ?? {}), ...(project.pace ?? {}) },
+    runtime: { ...(base.runtime ?? {}), ...(install.runtime ?? {}), ...(project.runtime ?? {}) },
+    lifecycle: project.lifecycle ?? install.lifecycle ?? base.lifecycle,
   };
   if (process.env.YDB_API_BASE) cfg.apiBase = process.env.YDB_API_BASE;
   if (process.env.YDB_DO_NAME) cfg.doName = process.env.YDB_DO_NAME;
-  if (!cfg.apiBase || !cfg.doName) throw new Error(`board config missing apiBase/doName (config dir ${CONFIG_DIR})`);
-  if (!cfg.lifecycle) throw new Error(`board config missing lifecycle (config dir ${CONFIG_DIR})`);
+  if (!cfg.apiBase || !cfg.doName) throw new Error(`board config missing apiBase/doName (config dir ${CONFIG_DIR}, or .yarradev/board.json in ${process.cwd()}, or YDB_API_BASE/YDB_DO_NAME env)`);
+  if (!cfg.lifecycle) throw new Error(`board config missing lifecycle (config dir ${CONFIG_DIR}, or .yarradev/board.json)`);
   assertSafeCommandFields(cfg);
   return cfg;
 }
