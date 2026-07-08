@@ -303,6 +303,13 @@ export async function routeVerdict({
     const gen = ctx.gen;
     const status = verdict.status;
 
+    /** Load-bearing act failed → surface (act_failed) AND park (escalate). Uniform across branches (#58/#59/#60).
+     * Defined here (not above the try) because it closes over `id`, which is scoped to this try block. */
+    const failAct = async (script, result, reason) => {
+      actFailed = { script, result: result ?? null };
+      await call("escalate.mjs", [id, reason]);
+    };
+
     // ---- worker advance ------------------------------------------------------
     if (status === "advance") {
       const mv = await call("move.mjs", [id, gen, ctx.to, ctx.role]);
@@ -333,7 +340,7 @@ export async function routeVerdict({
       // GH #54: an unhandled MOVE failure (not ok, not the advisor_clear reshape) must be surfaced, not
       // silently reported as "routed".
       if (!(mv && mv.ok) && !advisorClear422) {
-        actFailed = { script: "move.mjs", result: mv ?? null };
+        await failAct("move.mjs", mv, `advance act failed (${ctx.state}→${ctx.to}): ${mv?.reason ?? mv?.outcome ?? "no detail"}`);
       }
       return { acts, dispatches, advisorClear422, spawnDeferred, actFailed };
     }
@@ -343,34 +350,40 @@ export async function routeVerdict({
       if (verdict.to != null) {
         // worker reject — backward edge from the verdict, posted under the stage owner.
         const r = await call("reject.mjs", [id, gen, verdict.to, ctx.role]);
-        if (r && !r.ok && isBounceBudget(r)) {
-          await call("escalate.mjs", [id, `bounce budget: ${ctx.state}→${verdict.to}`]);
+        if (r && !r.ok) {
+          if (isBounceBudget(r)) await call("escalate.mjs", [id, `bounce budget: ${ctx.state}→${verdict.to}`]);
+          else await failAct("reject.mjs", r, `reject act failed (${ctx.state}→${verdict.to}): ${r?.reason ?? r?.outcome ?? "no detail"}`);
         }
       } else {
         // advisor reject — derive the single backward edge from the compiled machine.
         const derivedTo = rejectTargetOf(machine, ctx.state);
         if (derivedTo != null) {
-          await call("reject.mjs", [id, gen, derivedTo, ctx.role]); // under the ADVISOR's role, not the owner
+          const r = await call("reject.mjs", [id, gen, derivedTo, ctx.role]); // under the ADVISOR's role, not the owner
+          if (r && !r.ok) {
+            if (isBounceBudget(r)) await call("escalate.mjs", [id, `bounce budget: ${ctx.state}→${derivedTo}`]);
+            else await failAct("reject.mjs", r, `advisor reject act failed (${ctx.state}→${derivedTo}): ${r?.reason ?? r?.outcome ?? "no detail"}`);
+          }
         } else {
           // 0 or >1 REJECT edges → ambiguous; never guess.
           await call("escalate.mjs", [id, `reject edge ambiguous for state ${ctx.state}`]);
         }
       }
-      return { acts, dispatches, advisorClear422, spawnDeferred };
+      return { acts, dispatches, advisorClear422, spawnDeferred, actFailed };
     }
 
     // ---- mechanical submitted (LINK_PR first submission / PUSH respawn fix) ---
     if (status === "submitted") {
       const ev = verdict.evidence ?? {};
       const { repo, pr_number: pr, head } = ev;
-      if (ctx.kind === "respawn") {
-        await call("push.mjs", [id, gen, repo, pr, head]); // pr_link already exists → re-point head
-      } else {
-        await call("link-pr.mjs", [id, gen, repo, pr, head]); // first submission (work/reclaim) → create pr_link
+      const submit = ctx.kind === "respawn"
+        ? await call("push.mjs", [id, gen, repo, pr, head]) // pr_link already exists → re-point head
+        : await call("link-pr.mjs", [id, gen, repo, pr, head]); // first submission (work/reclaim) → create pr_link
+      if (!(submit && submit.ok)) {
+        await failAct(ctx.kind === "respawn" ? "push.mjs" : "link-pr.mjs", submit, `submit act failed for ${id}: ${submit?.reason ?? submit?.outcome ?? "no detail"}`);
       }
       // Recover stranded CI (GH #21) — CI completion often lands before LINK_PR creates the row.
-      await call("reattach-ci.mjs", [id, repo, pr, head]);
-      return { acts, dispatches, advisorClear422, spawnDeferred };
+      await call("reattach-ci.mjs", [id, repo, pr, head]); // best-effort CI recovery — never escalate
+      return { acts, dispatches, advisorClear422, spawnDeferred, actFailed };
     }
 
     // ---- analyst decomposed (fan an epic out into child story cards) ----------
@@ -390,7 +403,8 @@ export async function routeVerdict({
         const r = await call("create.mjs", args);
         if (!r || !r.ok) {
           allCreated = false;
-          actFailed = { script: "create.mjs", result: r ?? null }; // GH #54: partial decomposition surfaced
+          // GH #54/#60: partial decomposition surfaced AND parked (avoid re-decompose duplicates on retry).
+          await failAct("create.mjs", r, "decompose CREATE failed mid-loop (partial children) — parking to avoid re-decompose duplicates");
           break; // CREATE failure → stop issuing further CREATEs; next pass re-dispatches the analyst.
         }
       }
@@ -399,8 +413,7 @@ export async function routeVerdict({
         if (!(mvr && mvr.ok)) {
           // GH #54: children were minted but the epic can't reach the barrier stage → inconsistent half-state.
           // Surface AND escalate (loud board signal), not a silent retry.
-          actFailed = { script: "move.mjs", result: mvr ?? null };
-          await call("escalate.mjs", [id, "decomposed: children created but barrier advance failed"]);
+          await failAct("move.mjs", mvr, "decomposed: children created but barrier advance failed");
         }
       }
       return { acts, dispatches, advisorClear422, spawnDeferred, actFailed };
