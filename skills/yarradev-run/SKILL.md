@@ -94,7 +94,8 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
 
 > **PRIMARY (v0.9.1 cutover) — run `node $S/pass.mjs` each pass.** `pass.mjs` is now the default conductor:
 > it **reconciles** landed verdicts (re-CLAIM at verdict time, so a long subagent's verdict isn't stranded by
-> lease-TTL gen-bumps — fixes #27's recovery gap), **fans out** ≤`pace.maxCardsPerPass` concurrent dispatches
+> lease-TTL gen-bumps — fixes #27's recovery gap), **fans out** up to `effectiveK` concurrent dispatches —
+> `min(pace.maxCardsPerPass, pace.maxConcurrent − in-flight)`, dropped to 0/1 by the 529 circuit breaker
 > (#28), routes every verdict with full parity, and handles the prep-clear check (step 0) + the 40-pass
 > counter (step 3) + the `epic_done` signal. **Fallback:** if `pass.mjs` is unavailable or hits an unexpected
 > error, the step-by-step loop below (steps 0–4) remains the manual procedure. The detailed steps below are
@@ -145,7 +146,7 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
     4. This step touches **no lease, no gen, no CLAIM** — `pending_spawn` isn't part of any card's
        fencing, so it can run before, after, or interleaved with step 2's per-kind dispatch without any
        ordering dependency on it.
-2. **For each actionable card, sequentially, up to `pace.maxCardsPerPass` (default 1), branch on `kind`:**
+2. **For each actionable card, sequentially, up to `effectiveK` (≤ `pace.maxCardsPerPass`, default 3), branch on `kind`:**
 
    **`escalate`** — a budget is exhausted / CI is stalled; park for a human (**no CLAIM, no dispatch, no quota**):
    1. `node $S/escalate.mjs <id> "<reason>"` — opens a question via `ASK` → the board sets `blocked=true`.
@@ -437,8 +438,10 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
    `pace.minLoopIntervalS`, default 5m; keep it under your prompt-cache TTL for cache hits).
 
 ## Discipline & safety
-- **One subagent per card per pass.** A card advances at most one stage per pass; the next pass
-  re-reconciles. `maxCardsPerPass:1` keeps it single-threaded.
+- **Bounded fan-out.** A card advances at most one stage per pass; the next pass re-reconciles. Each pass
+  dispatches up to `effectiveK = min(pace.maxCardsPerPass, pace.maxConcurrent − in-flight)`. A z.ai `529`
+  (surfaced by reconcile as `gateway_529`) trips a circuit breaker: OPEN → dispatch 0 for `breakerCooldownS`,
+  then HALF_OPEN → one probe, then CLOSED on a clean pass. Set `maxCardsPerPass:1` to force single-threaded.
 - **Never re-dispatch a card whose subagent is still running.** A long stage owner can outlast the lease
   (lease-TTL expiry bumps `current_gen`, so `dispatch-and-wait` times out near the TTL and you CLEAR_LEASE).
   `list-ready` then **skips** the card while its dispatch is `pending` with no `done` in the manifest

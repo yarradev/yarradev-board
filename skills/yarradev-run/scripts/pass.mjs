@@ -27,6 +27,7 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./plugin-io.mjs";
+import { inFlightCardIds } from "./in-flight.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const SCRIPTS_DIR = HERE;
@@ -38,6 +39,7 @@ function defaultStateDir() {
 const MANIFEST_NAME = "dispatch-manifest.jsonl";
 const CONSUMED_NAME = "dispatch-consumed.jsonl";
 const CONTEXT_NAME = "dispatch-context.jsonl";
+const BREAKER_NAME = "dispatch-breaker.json";
 
 // ============================================================================
 // Pure helpers (no I/O — the testable surface)
@@ -855,6 +857,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const cfg = loadConfig();
   const K = cfg.pace?.maxCardsPerPass ?? 1;
   const ttlS = cfg.pace?.claimTtlS ?? 1800;
+  const maxConcurrent = cfg.pace?.maxConcurrent ?? Infinity;
+  const breakerCooldownS = cfg.pace?.breakerCooldownS ?? 600;
+  const inflightStaleS = Number(cfg.runtime?.inflightStaleS ?? 7200);
 
   // Context management (epic-context-clearing): if the prep-clear flag is set (by the yarradev-loop wrapper
   // on CTX%≥60%, or by the pass-count fallback below), reconcile in-flight verdicts but do NOT claim/dispatch
@@ -915,6 +920,32 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   for (const r of recResults) {
     process.stdout.write(
       JSON.stringify({ phase: "reconcile", ...r }) + "\n",
+    );
+  }
+
+  // --- 529 circuit breaker + total-concurrency bound (GH #39) ---
+  const breakerPath = join(stateDir, BREAKER_NAME);
+  const nowMs = Date.now();
+  let prevBreaker = { state: "CLOSED", breakerUntil: 0 };
+  try {
+    const raw = readIfPresent(breakerPath);
+    if (raw) prevBreaker = { state: "CLOSED", breakerUntil: 0, ...JSON.parse(raw) };
+  } catch {
+    /* corrupt breaker file → default CLOSED */
+  }
+  const inFlightCount = inFlightCardIds(manifestContent, nowMs, inflightStaleS).size;
+  const { effectiveK, breaker, saw529 } = decideDispatch({
+    recResults, prevBreaker, inFlightCount, K, maxConcurrent, cooldownS: breakerCooldownS, now: nowMs,
+  });
+  try {
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(breakerPath, JSON.stringify(breaker));
+  } catch (e) {
+    process.stderr.write(`[pass] breaker persist failed: ${e?.message ?? e} (non-fatal)\n`);
+  }
+  if (breaker.state !== "CLOSED" || saw529) {
+    process.stderr.write(
+      `[pass] breaker ${breaker.state} (saw529=${saw529}, inFlight=${inFlightCount}/${maxConcurrent}, effectiveK=${effectiveK})\n`,
     );
   }
 
@@ -979,10 +1010,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
   if (skipDispatch) {
     process.stdout.write(JSON.stringify({ phase: "dispatch", action: "skipped", reason: "prep-clear" }) + "\n");
+  } else if (effectiveK <= 0) {
+    const reason = breaker.state === "OPEN" ? "breaker-open" : "at-capacity";
+    process.stdout.write(
+      JSON.stringify({ phase: "dispatch", action: "skipped", reason, inFlightCount, breakerState: breaker.state }) + "\n",
+    );
   } else {
     const dispatchOut = await dispatchNew({
       cards: dispatchCards,
-      K,
+      K: effectiveK,
       epicOf,
       run,
       dispatch,
