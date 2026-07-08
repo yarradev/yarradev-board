@@ -499,6 +499,10 @@ export async function routeVerdict({
  * → fire-and-forget `yarradev-dispatch` → record a dispatch-context entry (so reconcile can recover the
  * kind/to/state/role next pass without re-deriving). Best-effort: one card's failure never aborts the pass.
  * @param {object} opts
+ * @param {object} [opts.cfg] board.json (loadConfig() result) — sources role-specific dispatch extras
+ *   (currently: the releaser's `deployCmd`/`smokeCmd`, from `cfg.deploy`/`cfg.smoke`). Optional so existing
+ *   callers/tests that don't need extras keep working unchanged.
+ * @param {function} [opts.writeExtras] (path, content) => void — injected for testability (default fs.writeFileSync).
  * @returns {Promise<{dispatched: Array, skipped: Array}>}
  */
 export async function dispatchNew({
@@ -509,6 +513,8 @@ export async function dispatchNew({
   dispatch,
   writeContext,
   ttlS = 1800,
+  cfg = {},
+  writeExtras = (path, content) => writeFileSync(path, content),
 }) {
   const dispatched = [];
   const skipped = [];
@@ -528,7 +534,21 @@ export async function dispatchNew({
         continue;
       }
       // Build the worker dispatch prompt (notes[] forwarded — GH #18).
-      const prompt = await run("build-prompt.mjs", [card.role, card.id, "--to", card.to]);
+      const buildPromptArgs = [card.role, card.id, "--to", card.to];
+      // Releaser needs deployCmd/smokeCmd (board.json's deploy.*/smoke.*) to actually deploy — without this
+      // it always dispatched blind and escalated "no deploy command configured" regardless of board.json,
+      // no matter how correctly deploy.staging was set. Only wire it when a command is actually configured;
+      // an unconfigured leg falls through to the releaser's own fail-closed "question" (never guess).
+      const deployCmd = card.role === "releaser" ? (card.to === "prod" ? cfg.deploy?.prod : cfg.deploy?.staging) : undefined;
+      if (deployCmd) {
+        const smokeCmd = card.to === "prod" ? cfg.smoke?.prod : cfg.smoke?.staging;
+        const lines = [`deployCmd: ${deployCmd}`];
+        if (smokeCmd) lines.push(`smokeCmd: ${smokeCmd}`);
+        const extrasPath = `/tmp/yarradev-extras-${card.id}.txt`;
+        writeExtras(extrasPath, lines.join("\n") + "\n");
+        buildPromptArgs.push("--extras-file", extrasPath);
+      }
+      const prompt = await run("build-prompt.mjs", buildPromptArgs);
       const promptFile = prompt?.path;
       if (!promptFile) {
         skipped.push({ cardId: card.id, reason: "build-prompt returned no path" });
@@ -1094,6 +1114,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       run,
       dispatch,
       ttlS,
+      cfg,
       writeContext: (verdictPath, ctx) => {
         mkdirSync(stateDir, { recursive: true });
         appendFileSync(contextPath, JSON.stringify({ verdictPath, ctx, recordedAt: new Date().toISOString() }) + "\n");

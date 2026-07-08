@@ -267,3 +267,131 @@ test("dispatchNew: empty card list → no-op", async () => {
   assert.equal(out.dispatched.length, 0);
   assert.equal(out.skipped.length, 0);
 });
+
+// ---- releaser deployCmd/smokeCmd wiring (previously build-prompt was called with no extras at all,
+// so the releaser always dispatched blind and escalated "no deploy command configured" regardless of
+// what board.json actually had set) --------------------------------------------------------------
+
+test("dispatchNew: releaser + configured deploy.staging → --extras-file passed with deployCmd", async () => {
+  const cards = [card("c1", 10, "work", { role: "releaser", to: "staging", state: "done" })];
+  const buildPromptCalls = [];
+  const extrasWritten = [];
+  const deps = defaultDeps({
+    run: async (script, args) => {
+      if (script === "build-prompt.mjs") {
+        buildPromptCalls.push(args);
+        return { ok: true, path: `/tmp/p-${args[1]}.txt` };
+      }
+      return { ok: true, outcome: "committed", gen: 5 };
+    },
+  });
+  const out = await dispatchNew({
+    cards,
+    K: 1,
+    ...deps,
+    cfg: { deploy: { staging: "bash /Users/x/deploy-dispatch.sh staging" } },
+    writeExtras: (path, content) => extrasWritten.push({ path, content }),
+  });
+  assert.equal(out.dispatched.length, 1, "dispatched despite the extras step");
+  assert.equal(buildPromptCalls.length, 1);
+  const args = buildPromptCalls[0];
+  assert.ok(args.includes("--extras-file"), "build-prompt.mjs invoked with --extras-file");
+  const extrasPath = args[args.indexOf("--extras-file") + 1];
+  assert.equal(extrasWritten.length, 1);
+  assert.equal(extrasWritten[0].path, extrasPath, "the path passed to build-prompt is the path written");
+  assert.match(extrasWritten[0].content, /deployCmd: bash \/Users\/x\/deploy-dispatch\.sh staging/);
+  assert.doesNotMatch(extrasWritten[0].content, /smokeCmd/, "no smoke.staging configured → no smokeCmd line");
+});
+
+test("dispatchNew: releaser + deploy.staging AND smoke.staging both configured → both lines written", async () => {
+  const cards = [card("c1", 10, "work", { role: "releaser", to: "staging", state: "done" })];
+  const extrasWritten = [];
+  const deps = defaultDeps({
+    run: async (script, args) => {
+      if (script === "build-prompt.mjs") return { ok: true, path: `/tmp/p-${args[1]}.txt` };
+      return { ok: true, outcome: "committed", gen: 5 };
+    },
+  });
+  await dispatchNew({
+    cards,
+    K: 1,
+    ...deps,
+    cfg: { deploy: { staging: "deploy.sh" }, smoke: { staging: "smoke.sh" } },
+    writeExtras: (path, content) => extrasWritten.push({ path, content }),
+  });
+  assert.match(extrasWritten[0].content, /deployCmd: deploy\.sh/);
+  assert.match(extrasWritten[0].content, /smokeCmd: smoke\.sh/);
+});
+
+test("dispatchNew: releaser + NO deploy.staging configured → no --extras-file (releaser escalates on its own, as designed)", async () => {
+  const cards = [card("c1", 10, "work", { role: "releaser", to: "staging", state: "done" })];
+  const buildPromptCalls = [];
+  const extrasWritten = [];
+  const deps = defaultDeps({
+    run: async (script, args) => {
+      if (script === "build-prompt.mjs") {
+        buildPromptCalls.push(args);
+        return { ok: true, path: `/tmp/p-${args[1]}.txt` };
+      }
+      return { ok: true, outcome: "committed", gen: 5 };
+    },
+  });
+  await dispatchNew({
+    cards,
+    K: 1,
+    ...deps,
+    cfg: {}, // no deploy key at all — the exact acme:main gap that stalled 1db6b7b4
+    writeExtras: (path, content) => extrasWritten.push({ path, content }),
+  });
+  assert.ok(!buildPromptCalls[0].includes("--extras-file"), "no extras when nothing is configured");
+  assert.equal(extrasWritten.length, 0);
+});
+
+test("dispatchNew: non-releaser role with deploy configured → extras NOT wired (scoped to releaser only)", async () => {
+  const cards = [card("c1", 10, "work", { role: "developer", to: "dev", state: "spec" })];
+  const buildPromptCalls = [];
+  const deps = defaultDeps({
+    run: async (script, args) => {
+      if (script === "build-prompt.mjs") {
+        buildPromptCalls.push(args);
+        return { ok: true, path: `/tmp/p-${args[1]}.txt` };
+      }
+      return { ok: true, outcome: "committed", gen: 5 };
+    },
+  });
+  await dispatchNew({
+    cards,
+    K: 1,
+    ...deps,
+    cfg: { deploy: { staging: "deploy.sh" } },
+  });
+  assert.ok(!buildPromptCalls[0].includes("--extras-file"), "developer dispatch is untouched by deploy config");
+});
+
+test("dispatchNew: releaser + to:prod → sources deployCmd from cfg.deploy.prod, not .staging", async () => {
+  const cards = [card("c1", 10, "work", { role: "releaser", to: "prod", state: "staging" })];
+  const extrasWritten = [];
+  const deps = defaultDeps({
+    run: async (script, args) => {
+      if (script === "build-prompt.mjs") return { ok: true, path: `/tmp/p-${args[1]}.txt` };
+      return { ok: true, outcome: "committed", gen: 5 };
+    },
+  });
+  await dispatchNew({
+    cards,
+    K: 1,
+    ...deps,
+    cfg: { deploy: { staging: "wrong-leg.sh", prod: "prod-deploy.sh" }, smoke: { prod: "prod-smoke.sh" } },
+    writeExtras: (path, content) => extrasWritten.push({ path, content }),
+  });
+  assert.match(extrasWritten[0].content, /deployCmd: prod-deploy\.sh/);
+  assert.match(extrasWritten[0].content, /smokeCmd: prod-smoke\.sh/);
+  assert.doesNotMatch(extrasWritten[0].content, /wrong-leg/);
+});
+
+test("dispatchNew: cfg omitted entirely (backward compat with existing callers/tests) → no crash, no extras", async () => {
+  const cards = [card("c1", 10, "work", { role: "releaser", to: "staging", state: "done" })];
+  const deps = defaultDeps();
+  const out = await dispatchNew({ cards, K: 1, ...deps }); // no cfg passed at all
+  assert.equal(out.dispatched.length, 1, "defaults cfg={} internally — does not throw");
+});
