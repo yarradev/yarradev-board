@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,4 +62,18 @@ test("native invoke: prints a dispatch-request, records pending, does NOT block 
   // used verbatim — no "claude-bg" subdir appended); MANIFEST_FILE = join(STATE_DIR, "dispatch-manifest.jsonl").
   const manifest = readFileSync(join(dir, "dispatch-manifest.jsonl"), "utf8");
   assert.match(manifest, /"status":"pending"[^\n]*"cardId":"card-9"/);
+});
+
+test("--complete: writes the verdict file and appends a done manifest entry", () => {
+  const dir = mkdtempSync(join(tmpdir(), "yd-complete-"));
+  const verdictPath = join(dir, "verdict.txt");
+  const r = spawnSync(process.execPath, [DISPATCH, "--complete", verdictPath, "card-3", "--gen", "5", "--role", "tester"], {
+    encoding: "utf8",
+    input: "```json\n{\"status\":\"advance\",\"to\":\"done\"}\n```\n",
+    env: { ...process.env, XDG_DATA_HOME: dir },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(readFileSync(verdictPath, "utf8"), /"status":"advance"/);
+  const manifest = readFileSync(join(dir, "dispatch-manifest.jsonl"), "utf8");
+  assert.match(manifest, /"status":"done"[^\n]*"cardId":"card-3"[^\n]*"gen":"5"/);
 });

@@ -242,6 +242,19 @@ export function utcNow() {
 }
 
 /**
+ * Native completion (GH #51): the host conductor calls this after its Agent-tool subagent returns, piping the
+ * agent's final message (the verdict) on stdin. Writes the verdict file and appends the `done` manifest entry —
+ * the exact artifacts `pass.mjs`'s reconcile consumes, so external and native land identically.
+ * @param {{verdictText:string, verdictPath:string, cardId:string, gen:string, role:string, manifestPath:string}} o
+ */
+export function completeNative({ verdictText, verdictPath, cardId, gen, role, manifestPath }) {
+  mkdirSync(dirname(verdictPath), { recursive: true });
+  writeFileSync(verdictPath, verdictText);
+  mkdirSync(dirname(manifestPath), { recursive: true });
+  appendFileSync(manifestPath, doneEntry({ cardId, verdictPath, gen, role, completedAt: utcNow() }) + "\n");
+}
+
+/**
  * Strip YDB_TOKEN* from the env handed to a spawned runner/subagent (defense-in-depth, GH #25). The
  * runner spawns `claude -p` as the subagent — it must NOT inherit board bearer tokens (a prompt-injected
  * role could otherwise `printenv` them and forge board acts). Case-insensitive. Leaves PATH/HOME and
@@ -541,6 +554,7 @@ function parseRunnerFlags(argv) {
     const a = argv[i];
     switch (a) {
       case "--gen": out.gen = argv[++i] ?? ""; break;
+      case "--role": out.role = argv[++i] ?? ""; break;
       case "--verdict": out.verdictPath = argv[++i] ?? ""; break;
       case "--model": out.model = argv[++i] ?? "sonnet"; break;
       case "--effort": out.effort = argv[++i] ?? "low"; break;
@@ -685,6 +699,24 @@ Exit: 0=dispatched, 1=error, 2=usage
         }
         process.exit(1);
       }
+      process.exit(0);
+    }
+
+    // --- native completion (--complete <verdictPath> <cardId> --gen <g> --role <r>) ---
+    if (argv[0] === "--complete") {
+      const verdictPath = argv[1];
+      const cardId = argv[2];
+      if (!verdictPath || !cardId) {
+        process.stderr.write("dispatch.mjs: --complete requires <verdictPath> <cardId>\n");
+        process.exit(2);
+      }
+      const flags = parseRunnerFlags(argv.slice(3)); // reuses --gen/--role parsing
+      const verdictText = readFileSync(0, "utf8"); // stdin
+      completeNative({
+        verdictText, verdictPath, cardId,
+        gen: flags.gen ?? "", role: flags.role ?? "",
+        manifestPath: MANIFEST_FILE,
+      });
       process.exit(0);
     }
 
