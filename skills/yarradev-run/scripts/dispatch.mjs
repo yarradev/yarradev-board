@@ -233,6 +233,74 @@ export function buildDispatchRequest({ role, cardId, verdictPath, gen, promptPat
   return { action: "dispatch-request", role, cardId, verdictPath, gen, promptPath, model, effort, tools, worktreeFlag };
 }
 
+const SUBAGENT_TYPES = new Set(["general-purpose", "Explore"]);
+
+/**
+ * Deep per-role/per-field merge of the `roles` blocks from the config layers (lowest→highest). Pure.
+ * @returns {Object<string, {model?:string, effort?:string, worktree?:boolean, subagentType?:string}>}
+ */
+export function mergeRoles(baseRoles, installRoles, projectRoles) {
+  const layers = [baseRoles, installRoles, projectRoles].map((r) => (r && typeof r === "object" ? r : {}));
+  const out = {};
+  for (const layer of layers) {
+    for (const [role, entry] of Object.entries(layer)) {
+      if (entry && typeof entry === "object") out[role] = { ...(out[role] ?? {}), ...entry };
+    }
+  }
+  return out;
+}
+
+/**
+ * Drop invalid fields from a merged roles map (invalid subagentType / non-boolean worktree), keeping valid
+ * model/effort/worktree/subagentType. Pure. Returns the cleaned map + a warning per dropped field. #53.
+ * @returns {{cleaned:Object, warnings:string[]}}
+ */
+export function sanitizeRoles(merged) {
+  const cleaned = {};
+  const warnings = [];
+  for (const [role, entry] of Object.entries(merged ?? {})) {
+    if (!entry || typeof entry !== "object") continue;
+    const c = {};
+    if (typeof entry.model === "string") c.model = entry.model;
+    if (typeof entry.effort === "string") c.effort = entry.effort;
+    if ("worktree" in entry) {
+      if (typeof entry.worktree === "boolean") c.worktree = entry.worktree;
+      else warnings.push(`roles.${role}.worktree must be boolean; ignoring ${JSON.stringify(entry.worktree)}`);
+    }
+    if ("subagentType" in entry) {
+      if (SUBAGENT_TYPES.has(entry.subagentType)) c.subagentType = entry.subagentType;
+      else warnings.push(`roles.${role}.subagentType must be one of ${[...SUBAGENT_TYPES].join("/")}; ignoring ${JSON.stringify(entry.subagentType)}`);
+    }
+    cleaned[role] = c;
+  }
+  return { cleaned, warnings };
+}
+
+/** Read a JSON file's parsed content, or {} if absent/unreadable. */
+function readJsonOr(path) {
+  try {
+    return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Load the merged, sanitized per-role overrides from the config layers (GH #53). Self-contained (no board
+ * client). `opts.configDir` defaults to `<dispatch.mjs dir>/../config`; `opts.cwd` to `process.cwd()`.
+ * @returns {Object<string, {model?:string, effort?:string, worktree?:boolean, subagentType?:string}>}
+ */
+export function loadRoleOverrides(opts = {}) {
+  const configDir = opts.configDir ?? join(dirname(__filename), "..", "config");
+  const cwd = opts.cwd ?? process.cwd();
+  const base = readJsonOr(join(configDir, "board.example.json")).roles;
+  const install = readJsonOr(join(configDir, "board.json")).roles;
+  const project = readJsonOr(join(cwd, ".yarradev", "board.json")).roles;
+  const { cleaned, warnings } = sanitizeRoles(mergeRoles(base, install, project));
+  for (const w of warnings) process.stderr.write(`dispatch.mjs: ${w}\n`);
+  return cleaned;
+}
+
 /**
  * ISO-8601 UTC timestamp (`date -u +%Y-%m-%dT%H:%M:%SZ` equivalent). Trims to whole seconds.
  * @returns {string}
