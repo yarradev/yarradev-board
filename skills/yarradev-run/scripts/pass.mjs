@@ -208,8 +208,20 @@ export function advanceBreaker({ state, breakerUntil = 0, saw529, now, cooldownS
   return { state, breakerUntil };
 }
 
-// TODO: Task 3 — decideDispatch
-export function decideDispatch() {}
+/**
+ * Decide this pass's dispatch budget: reduce the 529 signal from reconcile results, advance the breaker, then
+ * compute effectiveK. Pure — composes advanceBreaker + computeEffectiveK; main() supplies the I/O (read/write
+ * the breaker state file, count in-flight).
+ * @param {{recResults:Array<{error_type?:string}>|undefined, prevBreaker:{state:string,breakerUntil:number},
+ *          inFlightCount:number, K:number, maxConcurrent:number, cooldownS:number, now:number}} o
+ * @returns {{effectiveK:number, breaker:{state:string,breakerUntil:number}, saw529:boolean}}
+ */
+export function decideDispatch({ recResults, prevBreaker, inFlightCount, K, maxConcurrent, cooldownS, now }) {
+  const saw529 = Array.isArray(recResults) && recResults.some((r) => r?.error_type === "gateway_529");
+  const breaker = advanceBreaker({ ...prevBreaker, saw529, now, cooldownS });
+  const effectiveK = computeEffectiveK({ K, maxConcurrent, inFlightCount, breakerState: breaker.state });
+  return { effectiveK, breaker, saw529 };
+}
 
 /** Detect a board "bounce budget exhausted" 422 on a REJECT (thrash cap → escalate, don't re-loop). */
 function isBounceBudget(r) {

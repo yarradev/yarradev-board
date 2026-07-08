@@ -74,3 +74,41 @@ test("missing breakerUntil defaults to 0", () => {
   const b = advanceBreaker({ state: "CLOSED", saw529: false, now: T0, cooldownS: COOLDOWN_S });
   assert.deepEqual(b, { state: "CLOSED", breakerUntil: 0 });
 });
+
+// ---- decideDispatch ----
+const CLOSED0 = { state: "CLOSED", breakerUntil: 0 };
+
+test("decideDispatch: clean reconcile, headroom → full K, stays CLOSED", () => {
+  const d = decideDispatch({
+    recResults: [{ outcome: "advanced" }, { outcome: "skipped" }],
+    prevBreaker: CLOSED0, inFlightCount: 1, K: 3, maxConcurrent: 4, cooldownS: 600, now: T0,
+  });
+  assert.equal(d.saw529, false);
+  assert.equal(d.effectiveK, 3); // min(3, 4-1)
+  assert.equal(d.breaker.state, "CLOSED");
+});
+test("decideDispatch: a gateway_529 trips OPEN and forces effectiveK 0", () => {
+  const d = decideDispatch({
+    recResults: [{ outcome: "advanced" }, { outcome: "dispatch_error", error_type: "gateway_529" }],
+    prevBreaker: CLOSED0, inFlightCount: 0, K: 3, maxConcurrent: 4, cooldownS: 600, now: T0,
+  });
+  assert.equal(d.saw529, true);
+  assert.equal(d.breaker.state, "OPEN");
+  assert.equal(d.breaker.breakerUntil, T0 + 600 * 1000);
+  assert.equal(d.effectiveK, 0);
+});
+test("decideDispatch: OPEN past cooldown → HALF_OPEN, one probe", () => {
+  const d = decideDispatch({
+    recResults: [],
+    prevBreaker: { state: "OPEN", breakerUntil: T0 }, inFlightCount: 0, K: 3, maxConcurrent: 4, cooldownS: 600, now: T0 + 1,
+  });
+  assert.equal(d.breaker.state, "HALF_OPEN");
+  assert.equal(d.effectiveK, 1);
+});
+test("decideDispatch: undefined recResults treated as no 529", () => {
+  const d = decideDispatch({
+    recResults: undefined, prevBreaker: CLOSED0, inFlightCount: 4, K: 3, maxConcurrent: 4, cooldownS: 600, now: T0,
+  });
+  assert.equal(d.saw529, false);
+  assert.equal(d.effectiveK, 0); // at capacity
+});
