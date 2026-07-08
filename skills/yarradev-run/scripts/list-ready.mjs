@@ -119,7 +119,7 @@ const sorted = [...enriched.values()].sort((a, b) => {
 // the next pass reclaims + re-dispatches the card while the ORIGINAL subagent is still running → duplicate.
 // Skip cards whose latest dispatch is pending with no matching done and is recent; re-dispatchable once
 // the subagent finishes (done) or the entry goes stale (presumed dead).
-const staleS = Number(cfg.runtime?.inflightStaleS ?? process.env.YDB_INFLIGHT_STALE_S ?? 7200);
+const staleS = Number(cfg.runtime?.inflightStaleS ?? 7200);
 const manifestStateDir = process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share", "claude-bg");
 const manifestPath = join(manifestStateDir, "dispatch-manifest.jsonl");
 let inFlight = new Set();

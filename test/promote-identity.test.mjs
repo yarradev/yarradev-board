@@ -17,6 +17,7 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { projectBoardDir } from "./lib/project-board.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROMOTE = join(HERE, "..", "skills", "yarradev-run", "scripts", "promote.mjs");
@@ -50,10 +51,9 @@ async function runPromote(args, env) {
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const { port } = server.address();
   const child = spawn(process.execPath, [PROMOTE, ...args], {
+    cwd: projectBoardDir({ apiBase: `http://127.0.0.1:${port}`, doName: "promote-identity-test" }),
     env: {
       ...process.env,
-      YDB_API_BASE: `http://127.0.0.1:${port}`,
-      YDB_DO_NAME: "promote-identity-test",
       ...env,
     },
   });

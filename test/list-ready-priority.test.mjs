@@ -9,13 +9,15 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { projectBoardDir } from "./lib/project-board.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const LIST_READY = join(HERE, "..", "skills", "yarradev-run", "scripts", "list-ready.mjs");
 
-function run(env = {}) {
+function run({ apiBase, doName, ...env } = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [LIST_READY], {
+      cwd: projectBoardDir({ apiBase, doName }),
       env: { ...process.env, ...env },
     });
     let stdout = "";
@@ -117,8 +119,8 @@ test("list-ready emits cards in (epic priority, card priority, id) order", async
   const { port } = server.address();
 
   const { code, stdout } = await run({
-    YDB_API_BASE: `http://127.0.0.1:${port}`,
-    YDB_DO_NAME: "test-priority",
+    apiBase: `http://127.0.0.1:${port}`,
+    doName: "test-priority",
     YDB_TOKEN: "test.token",
   });
   await new Promise((r) => server.close(r));
@@ -201,8 +203,8 @@ test("list-ready tie-breaks on created_ts (older first) when (epic, card) priori
   const { port } = server.address();
 
   const { code, stdout } = await run({
-    YDB_API_BASE: `http://127.0.0.1:${port}`,
-    YDB_DO_NAME: "test-ts",
+    apiBase: `http://127.0.0.1:${port}`,
+    doName: "test-ts",
     YDB_TOKEN: "test.token",
   });
   await new Promise((r) => server.close(r));
@@ -257,7 +259,7 @@ test("list-ready skips cards whose deps_resolved is false; absent/true are emitt
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const { port } = server.address();
 
-  const { code, stdout, stderr } = await run({ YDB_API_BASE: `http://127.0.0.1:${port}`, YDB_DO_NAME: "test-deps", YDB_TOKEN: "test.token" });
+  const { code, stdout, stderr } = await run({ apiBase: `http://127.0.0.1:${port}`, doName: "test-deps", YDB_TOKEN: "test.token" });
   await new Promise((r) => server.close(r));
 
   assert.equal(code, 0);

@@ -10,8 +10,9 @@
  * Auth: the board bearer comes from env only (never config, never argv) — per ACTING ROLE via
  *       YDB_TOKEN_<ROLE> (e.g. YDB_TOKEN_DEVELOPER) for a per-role board identity, else the shared
  *       YDB_TOKEN. See resolveToken(). Tokens NEVER reach a subagent — the orchestrator posts every act.
- * Config: skills/yarradev-run/config/board.json (gitignored) overrides board.example.json;
- *         YDB_API_BASE / YDB_DO_NAME env vars override either.
+ * Config: .yarradev/board.json in the project root (committed, per-project) overrides board.example.json;
+ *         a legacy plugin-install board.json overlays too. NO env override for apiBase/doName (multi-project:
+ *         each project carries its own board.json).
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -40,8 +41,9 @@ function readJsonIfPresent(path) {
 export function loadConfig() {
   // Resolution (highest priority last): shipped template (board.example.json) ← legacy plugin-install
   // board.json (gitignored) ← PROJECT-LOCAL .yarradev/board.json (committed, per-project — the consumer's
-  // config home for multi-board setups) ← YDB_API_BASE/YDB_DO_NAME env (test/dev escape hatch). A partial
-  // overlay at any layer inherits the rest from the template (lifecycle/pace/etc.).
+  // config home for multi-board setups). NO env override for apiBase/doName — config lives in board.json
+  // (multi-project: each project carries its own). Tokens stay env (secrets). A partial overlay at any layer
+  // inherits the rest from the template (lifecycle/pace/runtime/etc.).
   const base = readJsonIfPresent(join(CONFIG_DIR, "board.example.json")) ?? {};
   const install = readJsonIfPresent(join(CONFIG_DIR, "board.json")) ?? {};
   const project = readJsonIfPresent(join(process.cwd(), ".yarradev", "board.json")) ?? {};
@@ -53,9 +55,7 @@ export function loadConfig() {
     runtime: { ...(base.runtime ?? {}), ...(install.runtime ?? {}), ...(project.runtime ?? {}) },
     lifecycle: project.lifecycle ?? install.lifecycle ?? base.lifecycle,
   };
-  if (process.env.YDB_API_BASE) cfg.apiBase = process.env.YDB_API_BASE;
-  if (process.env.YDB_DO_NAME) cfg.doName = process.env.YDB_DO_NAME;
-  if (!cfg.apiBase || !cfg.doName) throw new Error(`board config missing apiBase/doName (config dir ${CONFIG_DIR}, or .yarradev/board.json in ${process.cwd()}, or YDB_API_BASE/YDB_DO_NAME env)`);
+  if (!cfg.apiBase || !cfg.doName) throw new Error(`board config missing apiBase/doName — set them in .yarradev/board.json (project root) or the plugin-install board.json (config dir ${CONFIG_DIR})`);
   if (!cfg.lifecycle) throw new Error(`board config missing lifecycle (config dir ${CONFIG_DIR}, or .yarradev/board.json)`);
   assertSafeCommandFields(cfg);
   return cfg;
@@ -112,8 +112,8 @@ export function makeClient(opts = {}) {
   const needCfg = opts.apiBase == null || opts.doName == null;
   const cfg = needCfg ? loadConfig() : {};
   return new BoardClient({
-    apiBase: opts.apiBase ?? process.env.YDB_API_BASE ?? cfg.apiBase,
-    doName: opts.doName ?? process.env.YDB_DO_NAME ?? cfg.doName,
+    apiBase: opts.apiBase ?? cfg.apiBase,
+    doName: opts.doName ?? cfg.doName,
     token: opts.token ?? resolveToken(role),
     role, // acting board identity (informational on the client); token above encodes the actual identity
   });

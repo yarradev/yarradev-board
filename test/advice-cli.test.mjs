@@ -11,6 +11,7 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { projectBoardDir } from "./lib/project-board.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ADVICE = join(HERE, "..", "skills", "yarradev-run", "scripts", "advice.mjs");
@@ -29,9 +30,10 @@ function startStub() {
   return { server, requests };
 }
 
-function run(args, env = {}) {
+function run(args, { apiBase, doName, ...env } = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [ADVICE, ...args], {
+      cwd: projectBoardDir({ apiBase, doName }),
       env: { ...process.env, ...env },
     });
     let stdout = "";
@@ -50,8 +52,8 @@ test("advice.mjs --role code-reviewer posts under YDB_TOKEN_CODE_REVIEWER, not s
   const { code, stdout, stderr } = await run(
     ["card-1", "abc123", "looks fine", "--role", "code-reviewer"],
     {
-      YDB_API_BASE: `http://127.0.0.1:${port}`,
-      YDB_DO_NAME: "advice-cli-test",
+      apiBase: `http://127.0.0.1:${port}`,
+      doName: "advice-cli-test",
       YDB_TOKEN_CODE_REVIEWER: "code-reviewer.token",
       YDB_TOKEN_SECURITY_ADVISOR: "security-advisor.token",
     },
@@ -80,8 +82,8 @@ test("advice.mjs defaults to security-advisor when --role is omitted (backward c
   const { port } = server.address();
 
   await run(["card-2", "def456", "clean"], {
-    YDB_API_BASE: `http://127.0.0.1:${port}`,
-    YDB_DO_NAME: "advice-cli-test",
+    apiBase: `http://127.0.0.1:${port}`,
+    doName: "advice-cli-test",
     YDB_TOKEN_SECURITY_ADVISOR: "security-advisor.token",
   });
   await new Promise((r) => server.close(r));
@@ -95,8 +97,8 @@ test("advice.mjs falls back to shared YDB_TOKEN when the role's token is unset",
   const { port } = server.address();
 
   await run(["card-3", "ghi789", "clean", "--role", "code-reviewer"], {
-    YDB_API_BASE: `http://127.0.0.1:${port}`,
-    YDB_DO_NAME: "advice-cli-test",
+    apiBase: `http://127.0.0.1:${port}`,
+    doName: "advice-cli-test",
     YDB_TOKEN: "shared.token",
   });
   await new Promise((r) => server.close(r));
@@ -110,8 +112,8 @@ test("advice.mjs exits 2 on missing head (no network call)", async () => {
   const { port } = server.address();
 
   const { code, stderr } = await run(["card-4"], {
-    YDB_API_BASE: `http://127.0.0.1:${port}`,
-    YDB_DO_NAME: "advice-cli-test",
+    apiBase: `http://127.0.0.1:${port}`,
+    doName: "advice-cli-test",
     YDB_TOKEN: "shared.token",
   });
   await new Promise((r) => server.close(r));

@@ -9,6 +9,7 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { projectBoardDir } from "./lib/project-board.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CREATE = join(HERE, "..", "skills", "yarradev-run", "scripts", "create.mjs");
@@ -27,9 +28,10 @@ function startStub() {
   return { server, requests };
 }
 
-function run(args, env = {}) {
+function run(args, { apiBase, doName, ...env } = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CREATE, ...args], {
+      cwd: projectBoardDir({ apiBase, doName }),
       env: { ...process.env, ...env },
     });
     let stdout = "";
@@ -48,8 +50,8 @@ test("create.mjs posts CREATE with --lane fast → state:dev, --parent threaded,
   const { code, stdout } = await run(
     ["Decompose into workers", "--type", "epic", "--parent", "epic-1", "--lane", "fast"],
     {
-      YDB_API_BASE: `http://127.0.0.1:${port}`,
-      YDB_DO_NAME: "create-cli-test",
+      apiBase: `http://127.0.0.1:${port}`,
+      doName: "create-cli-test",
       YDB_TOKEN: "test.token",
     },
   );
@@ -80,8 +82,8 @@ test("create.mjs --lane full → state:spec", async () => {
   const { port } = server.address();
 
   await run(["Design the thing", "--lane", "full"], {
-    YDB_API_BASE: `http://127.0.0.1:${port}`,
-    YDB_DO_NAME: "create-cli-test",
+    apiBase: `http://127.0.0.1:${port}`,
+    doName: "create-cli-test",
     YDB_TOKEN: "test.token",
   });
   await new Promise((r) => server.close(r));
@@ -95,8 +97,8 @@ test("create.mjs omits state when neither --state nor --lane is given (board def
   const { port } = server.address();
 
   await run(["Just a title"], {
-    YDB_API_BASE: `http://127.0.0.1:${port}`,
-    YDB_DO_NAME: "create-cli-test",
+    apiBase: `http://127.0.0.1:${port}`,
+    doName: "create-cli-test",
     YDB_TOKEN: "test.token",
   });
   await new Promise((r) => server.close(r));
@@ -110,8 +112,8 @@ test("create.mjs --lane wins over --state when both are given", async () => {
   const { port } = server.address();
 
   await run(["Both given", "--state", "test", "--lane", "fast"], {
-    YDB_API_BASE: `http://127.0.0.1:${port}`,
-    YDB_DO_NAME: "create-cli-test",
+    apiBase: `http://127.0.0.1:${port}`,
+    doName: "create-cli-test",
     YDB_TOKEN: "test.token",
   });
   await new Promise((r) => server.close(r));
@@ -127,8 +129,8 @@ test("create.mjs --id is honored verbatim (deterministic bug-spawn id, Task A7a)
   const { code, stdout } = await run(
     ["Off-by-one in loop", "--id", "bug-aaaa1111bbbb2222", "--type", "bug", "--state", "dev", "--parent", "c1"],
     {
-      YDB_API_BASE: `http://127.0.0.1:${port}`,
-      YDB_DO_NAME: "create-cli-test",
+      apiBase: `http://127.0.0.1:${port}`,
+      doName: "create-cli-test",
       YDB_TOKEN: "test.token",
     },
   );
@@ -154,8 +156,8 @@ test("create.mjs mints its own randomUUID() when --id is omitted", async () => {
   const { port } = server.address();
 
   await run(["No explicit id"], {
-    YDB_API_BASE: `http://127.0.0.1:${port}`,
-    YDB_DO_NAME: "create-cli-test",
+    apiBase: `http://127.0.0.1:${port}`,
+    doName: "create-cli-test",
     YDB_TOKEN: "test.token",
   });
   await new Promise((r) => server.close(r));
@@ -170,8 +172,8 @@ test("create.mjs exits 2 on missing title (no network call)", async () => {
   const { port } = server.address();
 
   const { code, stderr } = await run(["--type", "story"], {
-    YDB_API_BASE: `http://127.0.0.1:${port}`,
-    YDB_DO_NAME: "create-cli-test",
+    apiBase: `http://127.0.0.1:${port}`,
+    doName: "create-cli-test",
     YDB_TOKEN: "test.token",
   });
   await new Promise((r) => server.close(r));
@@ -187,8 +189,8 @@ test("create.mjs --priority is posted in card data", async () => {
   const { port } = server.address();
 
   await run(["High-priority task", "--priority", "1"], {
-    YDB_API_BASE: `http://127.0.0.1:${port}`,
-    YDB_DO_NAME: "create-cli-test",
+    apiBase: `http://127.0.0.1:${port}`,
+    doName: "create-cli-test",
     YDB_TOKEN: "test.token",
   });
   await new Promise((r) => server.close(r));
@@ -202,8 +204,8 @@ test("create.mjs --type epic defaults to priority 50", async () => {
   const { port } = server.address();
 
   await run(["SSO migration", "--type", "epic"], {
-    YDB_API_BASE: `http://127.0.0.1:${port}`,
-    YDB_DO_NAME: "create-cli-test",
+    apiBase: `http://127.0.0.1:${port}`,
+    doName: "create-cli-test",
     YDB_TOKEN: "test.token",
   });
   await new Promise((r) => server.close(r));
@@ -218,8 +220,8 @@ test("create.mjs --type story defaults to priority 100", async () => {
   const { port } = server.address();
 
   await run(["Regular task"], {
-    YDB_API_BASE: `http://127.0.0.1:${port}`,
-    YDB_DO_NAME: "create-cli-test",
+    apiBase: `http://127.0.0.1:${port}`,
+    doName: "create-cli-test",
     YDB_TOKEN: "test.token",
   });
   await new Promise((r) => server.close(r));
@@ -233,8 +235,8 @@ test("create.mjs --priority with non-integer exits 2", async () => {
   const { port } = server.address();
 
   const { code, stderr } = await run(["Bad priority", "--priority", "high"], {
-    YDB_API_BASE: `http://127.0.0.1:${port}`,
-    YDB_DO_NAME: "create-cli-test",
+    apiBase: `http://127.0.0.1:${port}`,
+    doName: "create-cli-test",
     YDB_TOKEN: "test.token",
   });
   await new Promise((r) => server.close(r));
@@ -250,8 +252,8 @@ test("create.mjs --depends-on CSV → data.depends_on (parsed, trimmed, deduped)
   const { port } = server.address();
 
   await run(["Worker pool", "--parent", "epic-1", "--depends-on", " card-a , card-b,card-a ,,"], {
-    YDB_API_BASE: `http://127.0.0.1:${port}`,
-    YDB_DO_NAME: "create-cli-test",
+    apiBase: `http://127.0.0.1:${port}`,
+    doName: "create-cli-test",
     YDB_TOKEN: "test.token",
   });
   await new Promise((r) => server.close(r));
@@ -265,8 +267,8 @@ test("create.mjs omits depends_on when --depends-on is not given (GH #32)", asyn
   const { port } = server.address();
 
   await run(["Independent child", "--parent", "epic-1"], {
-    YDB_API_BASE: `http://127.0.0.1:${port}`,
-    YDB_DO_NAME: "create-cli-test",
+    apiBase: `http://127.0.0.1:${port}`,
+    doName: "create-cli-test",
     YDB_TOKEN: "test.token",
   });
   await new Promise((r) => server.close(r));
