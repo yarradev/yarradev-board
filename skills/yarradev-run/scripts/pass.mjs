@@ -719,18 +719,30 @@ function sanitizeEnv(env) {
   return clean;
 }
 
-/** Build the real fire-and-forget `dispatch(role, cardId, promptFile)`: spawnSync yarradev-dispatch. */
+/**
+ * Build the real fire-and-forget `dispatch(role, cardId, promptFile)`. Precedence (highest → lowest):
+ *   1. toolPath                      — cfg.runtime.dispatchTool (explicit per-project override)
+ *   2. YARRADEV_DISPATCH             — legacy external binary (e.g. ~/work/tools/yarradev-dispatch)
+ *   3. the plugin's own dispatch.mjs — the PORTABLE default (GH #43), invoked via `node` (no shebang dep)
+ *
+ * Returns the verdictPath (stdout) on success; throws on non-zero exit / no-path. The contract the
+ * conductor depends on is unchanged.
+ */
 export function makeDispatch(toolPath) {
-  const tool = toolPath ?? process.env.YARRADEV_DISPATCH ?? join(homedir(), "work", "tools", "yarradev-dispatch");
+  const externalTool = toolPath ?? process.env.YARRADEV_DISPATCH ?? null;
+  const dispatchMjs = join(SCRIPTS_DIR, "dispatch.mjs");
   return async (role, cardId, promptFile) => {
-    const r = spawnSync(tool, [role, cardId, promptFile], { encoding: "utf8", env: sanitizeEnv(process.env) });
+    const r = externalTool
+      ? spawnSync(externalTool, [role, cardId, promptFile], { encoding: "utf8", env: sanitizeEnv(process.env) })
+      : spawnSync(process.execPath, [dispatchMjs, role, cardId, promptFile], {
+          encoding: "utf8",
+          env: sanitizeEnv(process.env),
+        });
     if (r.status !== 0) {
-      throw new Error(
-        `yarradev-dispatch exited ${r.status}${r.stderr ? ` — ${r.stderr.trim()}` : ""}`,
-      );
+      throw new Error(`dispatch exited ${r.status}${r.stderr ? ` — ${r.stderr.trim()}` : ""}`);
     }
     const vp = (r.stdout ?? "").trim();
-    if (!vp) throw new Error("yarradev-dispatch printed no verdict path on stdout");
+    if (!vp) throw new Error("dispatch printed no verdict path on stdout");
     return vp;
   };
 }
