@@ -22,3 +22,47 @@ test("GET / serves the monitor page", async () => {
   assert.match(r.headers.get("content-type") ?? "", /text\/html/);
   server.close();
 });
+
+test("POST /pause invokes the action", async () => {
+  let paused = false;
+  const server = createControlPlane({ provider: {}, actions: { pause: () => { paused = true; return { ok: true }; } } });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/pause`, { method: "POST" });
+  assert.deepEqual(await res.json(), { ok: true });
+  assert.equal(paused, true);
+  server.close();
+});
+
+test("POST /resume, /tick invoke their actions; /retry receives the card query param", async () => {
+  const calls = [];
+  const server = createControlPlane({
+    provider: {},
+    actions: {
+      resume: () => { calls.push("resume"); return { ok: true }; },
+      tick: () => { calls.push("tick"); return { ok: true }; },
+      retry: (params) => { calls.push(`retry:${params.get("card")}`); return { ok: true, card: params.get("card") }; },
+    },
+  });
+  const port = await listen(server);
+
+  const rResume = await fetch(`http://127.0.0.1:${port}/resume`, { method: "POST" });
+  assert.deepEqual(await rResume.json(), { ok: true });
+
+  const rTick = await fetch(`http://127.0.0.1:${port}/tick`, { method: "POST" });
+  assert.deepEqual(await rTick.json(), { ok: true });
+
+  const rRetry = await fetch(`http://127.0.0.1:${port}/retry?card=c-42`, { method: "POST" });
+  assert.deepEqual(await rRetry.json(), { ok: true, card: "c-42" });
+
+  assert.deepEqual(calls, ["resume", "tick", "retry:c-42"]);
+  server.close();
+});
+
+test("POST to an unknown action returns 404", async () => {
+  const server = createControlPlane({ provider: {}, actions: { pause: () => ({ ok: true }) } });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/no-such-action`, { method: "POST" });
+  assert.equal(res.status, 404);
+  assert.deepEqual(await res.json(), { error: "not found" });
+  server.close();
+});
