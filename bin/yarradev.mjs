@@ -5,6 +5,7 @@ import { createControlPlane } from "../skills/yarradev-run/scripts/runner/contro
 import { buildStatus, inflightRows, assembleBoard } from "../skills/yarradev-run/scripts/runner/state.mjs";
 import { manifestPath, resolveHome, stateDir } from "../skills/yarradev-run/scripts/runner/paths.mjs";
 import { readBreaker, computeNextTickAt, readVerdict, explainCard, attentionCards, retryCard } from "../skills/yarradev-run/scripts/runner/providers.mjs";
+import { renderBoard } from "../skills/yarradev-run/scripts/runner/render-board.mjs";
 import { readFileSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -84,7 +85,9 @@ async function run(env = process.env) {
 // Read routes the control plane serves as GET (control-plane.mjs:15-21); everything else is POST.
 // Mirrors the runner MCP proxy's route table (mcp/proxy.mjs) so the CLI and MCP agree on method+params.
 export const GET = new Set(["status", "logs", "inflight", "recent", "attention", "explain", "cost", "board"]);
-export const COMMANDS = new Set([...GET, "pause", "resume", "tick", "retry", "stop"]);
+// "watch" is deliberately NOT in GET: it's a client-side poll loop over GET /board, not a
+// control-plane route in its own right (control-plane.mjs has no /watch handler).
+export const COMMANDS = new Set([...GET, "pause", "resume", "tick", "retry", "stop", "watch"]);
 
 /** Build the control-plane URL, forwarding a card id as the query param the route expects (#72.2):
  *  logs → ?id=<card>; explain/retry → ?card=<card>. Other routes ignore the extra arg. */
@@ -104,7 +107,8 @@ const USAGE = `usage: yarradev <command> [card]
   recent                     the most recent tick outcome
   attention                  cards awaiting a human (veto/hold/open-question/escalated)
   cost                       best-effort cost (unavailable in this version)
-  board                      live status board: cards in-flight + recently resolved/escalated
+  board                      print the live status board once (table, not raw JSON)
+  watch [--interval <ms>]     live status board, redrawn (default 1000ms)
   logs <card>                streamed verdict/log text for a card's newest dispatch
   explain <card>             merged board + local + breaker view of a card
   pause | resume | tick      control the tick loop
@@ -124,6 +128,50 @@ async function client(cmd, port, arg) {
   process.stdout.write(JSON.stringify(await r.json(), null, 2) + "\n");
 }
 
+async function fetchBoard(port) {
+  const res = await fetch(clientUrl("board", port), { method: "GET" });
+  return res.json();
+}
+
+/** One-shot `board`: fetch /board, render it as a table, print, exit 0. Mirrors client()'s
+ * ECONNREFUSED-friendly handling (friendly message + exit 1) instead of an uncaught rejection.
+ * The render is inside the same try as the fetch (not just the fetch) — a reachable-but-wrong
+ * server (e.g. an old daemon build with no /board route, replying 404 `{"error":"not found"}`)
+ * doesn't make fetch() throw; renderBoard() throws instead on the non-array body, which must
+ * still land on the friendly path, not an uncaught rejection with a raw stack trace. */
+async function printBoardOnce(port) {
+  try {
+    const rows = await fetchBoard(port);
+    process.stdout.write(renderBoard(rows, { color: process.stdout.isTTY }) + "\n");
+  } catch (e) {
+    const cause = e?.cause?.code ?? e?.cause?.message ?? e?.message ?? e;
+    process.stderr.write(`runner not running — start it with \`kdbx run -- yarradev run\` (${cause})\n`);
+    process.exit(1);
+  }
+}
+
+/** Poll /board every intervalMs, clear the screen, redraw. Tolerates a daemon blip (keeps polling —
+ * a daemon restart must not kill the watch loop; only SIGINT/SIGTERM end it). */
+async function watch(port, intervalMs) {
+  const color = process.stdout.isTTY;
+  process.stdout.write("\x1b[?25l"); // hide cursor
+  const restore = () => { process.stdout.write("\x1b[?25h"); process.exit(0); }; // show cursor on exit
+  process.on("SIGINT", restore);
+  process.on("SIGTERM", restore);
+  for (;;) {
+    let frame;
+    try {
+      const rows = await fetchBoard(port);
+      frame = renderBoard(rows, { color }) + `\n\n  polling :${port} every ${intervalMs}ms — Ctrl-C to exit`;
+    } catch (e) {
+      const cause = e?.cause?.code ?? e?.cause?.message ?? e?.message ?? e;
+      frame = `runner not reachable on :${port} (${cause}) — retrying…`;
+    }
+    process.stdout.write("\x1b[2J\x1b[H" + frame + "\n"); // clear screen + home, then draw
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const cmd = process.argv[2] ?? "run";
   if (cmd === "run") run();
@@ -134,6 +182,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   } else {
     const config = loadConfig();
     const port = config.runner?.port ?? 4599;
-    client(cmd, port, process.argv[3]);
+    if (cmd === "watch") {
+      const i = process.argv.indexOf("--interval");
+      const intervalMs = i !== -1 ? Number(process.argv[i + 1]) || 1000 : 1000;
+      watch(port, intervalMs);
+    } else if (cmd === "board") {
+      printBoardOnce(port);
+    } else {
+      client(cmd, port, process.argv[3]);
+    }
   }
 }

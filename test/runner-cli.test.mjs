@@ -104,6 +104,16 @@ test("buildActions.retry clears the lease via the client then ticks", async () =
   assert.equal(ticked, 1);
 });
 
+// Task 7: `board` is a one-shot GET route (table render is a CLI-only concern, not asserted here);
+// `watch` is a client-side-only command (a live poll loop), never a control-plane route.
+test("board is a GET command; watch is a known command (handled client-side)", () => {
+  assert.ok(GET.has("board"));
+  assert.ok(COMMANDS.has("board"));
+  assert.ok(COMMANDS.has("watch"));
+  assert.ok(!GET.has("watch"), "watch must not be a control-plane route");
+  assert.equal(clientUrl("board", 4599), "http://127.0.0.1:4599/board");
+});
+
 test("buildProvider.status reflects the real breaker file", async () => {
   const daemon = { isPaused: () => false, lastTick: () => ({ at: 1000, ok: true }), passRunning: () => false };
   const provider = buildProvider({ daemon, config: { pace: { minLoopIntervalS: 300 } }, env: { YARRADEV_STATE_DIR: "/nonexistent-state" }, client: {} });
