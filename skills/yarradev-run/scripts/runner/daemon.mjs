@@ -1,17 +1,23 @@
 // skills/yarradev-run/scripts/runner/daemon.mjs
 import { spawn as nodeSpawn } from "node:child_process";
 import { watch as fsWatch } from "node:fs";
+import { parsePassActivity, applyEvents, pruneActivity } from "./pass-activity.mjs";
 
-export function createDaemon({ runPass, intervalMs, now = () => Date.now() }) {
+export function createDaemon({ runPass, intervalMs, now = () => Date.now(), activityTtlMs = 600_000, activityCap = 50 }) {
   let paused = false, inFlight = null, dirty = false, last = null;
+  const activity = new Map();
 
   async function loop() {
     if (inFlight) { dirty = true; return inFlight; }
     inFlight = (async () => {
       do {
         dirty = false;
-        try { const r = await runPass(); last = { at: now(), ok: !!r?.ok, verdicts: r?.verdicts ?? 0 }; }
-        catch (e) { last = { at: now(), ok: false, error: String(e?.message ?? e) }; }
+        try {
+          const r = await runPass();
+          last = { at: now(), ok: !!r?.ok, verdicts: r?.verdicts ?? 0 };
+          if (Array.isArray(r?.events) && r.events.length) applyEvents(activity, r.events);
+        } catch (e) { last = { at: now(), ok: false, error: String(e?.message ?? e) }; }
+        pruneActivity(activity, now(), { ttlMs: activityTtlMs, cap: activityCap });
       } while (dirty && !paused);
     })().finally(() => { inFlight = null; });
     return inFlight;
@@ -24,6 +30,7 @@ export function createDaemon({ runPass, intervalMs, now = () => Date.now() }) {
     isPaused: () => paused,
     passRunning: () => inFlight !== null,
     lastTick: () => last,
+    getActivity: () => activity,
     async _drain() { while (inFlight) await inFlight; },
   };
 }
@@ -42,7 +49,7 @@ export function spawnPass({ passPath, env, timeoutMs = 120_000, spawn = nodeSpaw
     // timeoutMs guard, which just kills an already-nonexistent process) hangs forever.
     child.on("error", (e) => {
       clearTimeout(timer);
-      resolve({ ok: false, verdicts: 0, error: String(e?.message ?? e) });
+      resolve({ ok: false, verdicts: 0, events: [], error: String(e?.message ?? e) });
     });
     child.on("close", (code, signal) => {
       clearTimeout(timer);
@@ -51,7 +58,8 @@ export function spawnPass({ passPath, env, timeoutMs = 120_000, spawn = nodeSpaw
       // `routed` field. Count one per successfully-routed verdict line.
       let verdicts = 0;
       for (const line of out.split("\n")) { try { const j = JSON.parse(line); if (j?.phase === "reconcile" && j.outcome === "routed") verdicts += 1; } catch {} }
-      resolve({ ok: !killed && code === 0, verdicts, error: killed ? "pass timeout" : (code === 0 ? undefined : `exit ${code ?? signal}`) });
+      const events = parsePassActivity(out, Date.now());
+      resolve({ ok: !killed && code === 0, verdicts, events, error: killed ? "pass timeout" : (code === 0 ? undefined : `exit ${code ?? signal}`) });
     });
   });
 }

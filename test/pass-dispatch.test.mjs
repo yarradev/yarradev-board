@@ -140,7 +140,7 @@ test("dispatchNew: full chain per card — CLAIM → build-prompt → dispatch �
   assert.deepEqual(claimCalls, [["c1", "designer", 1800]], "claim.mjs <id> <role> <ttl>");
   // dispatch fired with role + cardId + the prompt path build-prompt returned.
   assert.deepEqual(out.dispatched, [
-    { role: "designer", cardId: "c1", promptFile: "/tmp/prompt-c1.txt", verdictPath: "/v/c1" },
+    { role: "designer", cardId: "c1", to: "dev", state: "spec", promptFile: "/tmp/prompt-c1.txt", verdictPath: "/v/c1" },
   ]);
   // context ledger recorded the dispatch context keyed by verdictPath (so reconcile can recover kind/to/state).
   assert.equal(deps.contexts.length, 1);

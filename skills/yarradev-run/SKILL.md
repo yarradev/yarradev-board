@@ -10,7 +10,7 @@ yarradev run`, or `YDB_TOKEN=… yarradev run`) is a long-lived Node process tha
 deterministic reconcile/dispatch implementation of everything this skill describes — on a timer plus a
 manifest-watch, dispatching role subagents as detached `claude -p` processes. It exposes a
 localhost-only HTTP control plane (`http://127.0.0.1:<runner.port>`, default `4599`; `yarradev status |
-pause | resume | tick | logs | stop`, plus a minimal browser monitor at `http://127.0.0.1:<port>/`).
+pause | resume | tick | logs | stop | board | watch`, plus a minimal browser monitor at `http://127.0.0.1:<port>/`).
 Detached agents survive a runner restart — they reconcile on the next tick regardless of whether the
 daemon that dispatched them is still the one running. Logs (the dispatch manifest + each subagent's
 live-streamed verdict output) live under the platform data dir (`$XDG_DATA_HOME/yarradev`, override with
@@ -18,12 +18,18 @@ live-streamed verdict output) live under the platform data dir (`$XDG_DATA_HOME/
 plugin `README.md`'s "Headless runner (supported)" section for the full reference.
 
 **Plugin surface (component ②).** Besides this conductor skill and the CLI daemon above, installing
-the plugin also gives you a `yarradev-runner` MCP (10 read/control tools proxying the daemon's
+the plugin also gives you a `yarradev-runner` MCP (11 read/control tools proxying the daemon's
 control plane — `status`/`inflight`/`recent`/`logs`/`explain`/`attention`/`pause`/`resume`/`tick`/
-`retry`; no human-gate tools) and a `yarradev-operator` skill you invoke for standup / triage-stuck-
+`retry`/`board`; no human-gate tools) and a `yarradev-operator` skill you invoke for standup / triage-stuck-
 card / attention-sweep / incident / cost runbooks (drafts + a cockpit link for human gates, never
 executes them; cost reporting isn't available yet). See the plugin `README.md`'s "Plugin surface
 (component ②)" section for the full reference.
+
+**Observability — live status board.** The daemon exposes `yarradev board` and `yarradev watch` CLI commands for observing the board's activity in real time:
+- `yarradev board` — print the live status board once (cards in-flight + recently resolved/escalated). Local state only; no board API calls.
+- `yarradev watch [--interval <ms>]` — the same board, redrawn live (default 1s). Local state only; no board API calls.
+
+The `yarradev-runner` MCP's `board` tool returns the same underlying data as a one-shot JSON snapshot; the live redraw (`watch`) is CLI-only.
 
 **Legacy: the in-session `/loop /yarradev:yarradev-run` procedure below.** This remains available as a
 manual/interactive fallback (e.g. for debugging a single pass step-by-step inside a live session) and as

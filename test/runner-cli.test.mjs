@@ -20,7 +20,7 @@ test("clientUrl maps subcommands to control-plane routes", () => {
 
 // #72.1: the read routes the control plane serves as GET must be in the GET set (only status/logs were).
 test("GET set covers every read route the control plane serves", () => {
-  for (const r of ["status", "logs", "inflight", "recent", "attention", "explain", "cost"]) {
+  for (const r of ["status", "logs", "inflight", "recent", "attention", "explain", "cost", "board"]) {
     assert.ok(GET.has(r), `${r} must be a GET route`);
   }
   for (const w of ["pause", "resume", "tick", "retry", "stop"]) {
@@ -102,6 +102,16 @@ test("buildActions.retry clears the lease via the client then ticks", async () =
   assert.deepEqual(await actions.retry(params), { ok: true, outcome: null, cardId: "c1", clearedGen: 4 });
   assert.deepEqual(client.calls, [["c1", 4]]);
   assert.equal(ticked, 1);
+});
+
+// Task 7: `board` is a one-shot GET route (table render is a CLI-only concern, not asserted here);
+// `watch` is a client-side-only command (a live poll loop), never a control-plane route.
+test("board is a GET command; watch is a known command (handled client-side)", () => {
+  assert.ok(GET.has("board"));
+  assert.ok(COMMANDS.has("board"));
+  assert.ok(COMMANDS.has("watch"));
+  assert.ok(!GET.has("watch"), "watch must not be a control-plane route");
+  assert.equal(clientUrl("board", 4599), "http://127.0.0.1:4599/board");
 });
 
 test("buildProvider.status reflects the real breaker file", async () => {

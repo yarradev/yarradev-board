@@ -269,3 +269,26 @@ test("reconcile #44: a 529 verdict (no fenced block + bare envelope) → outcome
   assert.equal(results[0].outcome, "dispatch_error", "a gateway outage must surface as dispatch_error, not the generic no-parse");
   assert.equal(results[0].error_type, "gateway_529");
 });
+
+test("reconcileVerdicts: routed result carries the dispatch context's state/to (for the status board)", async () => {
+  const manifest = JSON.stringify({ status: "done", cardId: "c1", verdictPath: "/v/c1", role: "developer" });
+  const context = JSON.stringify({ verdictPath: "/v/c1", ctx: { state: "dev", to: "test", kind: "work", gen: 5 } });
+  const results = await reconcileVerdicts({
+    manifestContent: manifest,
+    consumedContent: "",
+    contextContent: context,
+    lifecycle: {},
+    machine: { transitions: [] },
+    run: async (script) => (script === "claim.mjs" ? { ok: true, gen: 5 } : { ok: true, status: 202, outcome: "committed" }),
+    dispatch: async () => "/v/next",
+    getCard: async () => ({ id: "c1", current_gen: 5 }),
+    buildAdvisorPrompt: async () => "/tmp/p",
+    readVerdict: async () => '```json\n{"status":"advance"}\n```',
+    appendConsumed: async () => {},
+    readContext: async () => ({ state: "dev", to: "test", kind: "work", gen: 5 }),
+  });
+  assert.equal(results.length, 1);
+  assert.equal(results[0].outcome, "routed");
+  assert.equal(results[0].state, "dev");
+  assert.equal(results[0].to, "test");
+});

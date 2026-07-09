@@ -609,7 +609,7 @@ export async function dispatchNew({
       } catch (e) {
         process.stderr.write(`[pass] writeContext ${verdictPath} failed: ${e?.message ?? e} (non-fatal)\n`);
       }
-      dispatched.push({ role: card.role, cardId: card.id, promptFile, verdictPath });
+      dispatched.push({ role: card.role, cardId: card.id, to: card.to, state: card.state, promptFile, verdictPath });
     } catch (e) {
       // best-effort: a thrown error in one card's dispatch is caught + logged; the rest proceed.
       skipped.push({ cardId: card.id, reason: e?.message ?? String(e) });
@@ -732,6 +732,8 @@ export async function reconcileVerdicts({
         cardId,
         outcome: r.error ? "error" : r.actFailed ? "act_failed" : "routed",
         advisorClear422: r.advisorClear422,
+        state: ctx.state ?? null,
+        to: ctx.to ?? null,
         ...(r.actFailed ? { actFailed: r.actFailed } : {}),
         ...(r.error ? { error: r.error } : {}),
       });

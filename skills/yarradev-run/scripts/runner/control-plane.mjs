@@ -17,6 +17,7 @@ export function createControlPlane({ provider, actions }) {
       if (req.method === "GET" && p === "/recent") return json(res, 200, await provider.recent());
       if (req.method === "GET" && p === "/attention") return json(res, 200, await provider.attention());
       if (req.method === "GET" && p === "/cost") return json(res, 200, await provider.cost());
+      if (req.method === "GET" && p === "/board") return json(res, 200, await provider.board());
       if (req.method === "GET" && p === "/logs") return json(res, 200, { text: await provider.logs(url.searchParams.get("id")) });
       if (req.method === "GET" && p === "/explain") return json(res, 200, await provider.explain(url.searchParams.get("card")));
       // control routes wired in Task 10

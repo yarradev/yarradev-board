@@ -1,5 +1,5 @@
 // skills/yarradev-run/scripts/mcp/proxy.mjs
-const GET = new Set(["status", "inflight", "recent", "logs", "explain", "attention"]);
+const GET = new Set(["status", "inflight", "recent", "logs", "explain", "attention", "board"]);
 
 export function route(name, args = {}) {
   const method = GET.has(name) ? "GET" : "POST";

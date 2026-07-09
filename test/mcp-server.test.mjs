@@ -7,9 +7,9 @@ import { dirname, join } from "node:path";
 import { TOOLS, handleMessage } from "../skills/yarradev-run/scripts/mcp/server.mjs";
 import { route, makeCall } from "../skills/yarradev-run/scripts/mcp/proxy.mjs";
 
-const NAMES = ["status","inflight","recent","logs","explain","attention","pause","resume","tick","retry"];
+const NAMES = ["status","inflight","recent","logs","explain","attention","board","pause","resume","tick","retry"];
 
-test("catalog is exactly the 10 runner tools — no human-gate tools", () => {
+test("catalog is exactly the 11 runner tools — no human-gate tools", () => {
   assert.deepEqual(TOOLS.map((t) => t.name).sort(), [...NAMES].sort());
   for (const forbidden of ["human_go","humanGo","clear_veto","veto","hold","move","create"]) {
     assert.ok(!TOOLS.some((t) => t.name === forbidden), `${forbidden} must be absent (A1)`);
@@ -26,7 +26,7 @@ test("initialize returns tools capability + serverInfo", async () => {
 
 test("tools/list returns the catalog", async () => {
   const r = await handleMessage({ jsonrpc: "2.0", id: 2, method: "tools/list" }, { call: async () => {} });
-  assert.equal(r.result.tools.length, 10);
+  assert.equal(r.result.tools.length, 11);
 });
 
 test("tools/call invokes call() and wraps text content", async () => {
