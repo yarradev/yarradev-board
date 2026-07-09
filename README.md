@@ -127,6 +127,53 @@ periodically clear.
   Run it via `kdbx run -- yarradev run` so your board token(s) are injected into that one process without
   ever being exported to your shell or written to disk.
 
+## Plugin surface (component ②)
+
+Beyond the CLI daemon above, installing the plugin itself gives you two more things: a **local MCP**
+that lets an agent (or an interactive session) talk to a running `yarradev run` daemon, and an
+**operator skill** you invoke for day-to-day "how's the loop doing" work. Neither one runs the loop —
+they observe and nudge the same daemon described above.
+
+### `yarradev-runner` MCP
+
+Declared in `.claude-plugin/plugin.json`'s `mcpServers` block as a **stdio** server
+(`skills/yarradev-run/scripts/mcp/server.mjs`) that proxies to the same localhost-only control plane
+the CLI subcommands hit (`http://127.0.0.1:<runner.port>`, default `4599`) — it's a thin JSON-RPC↔HTTP
+bridge, not a second daemon, and it needs `yarradev run` already running (calls fail with a clear
+"runner not reachable" error otherwise). It carries **10 read/control tools**, reachable from a skill
+or subagent as `mcp__plugin_yarradev_yarradev-runner__<tool>`:
+
+| Tool | What it does |
+|---|---|
+| `status` | paused? interval? last/next tick? breaker state? pass running? |
+| `inflight` | cards currently dispatched and unresolved (role, age) |
+| `recent` | the most recent tick's outcome |
+| `logs` | the streamed verdict/log **text** for a card's newest dispatch — the raw output stream, not a structured log query |
+| `explain` | merged board + local (dispatch/verdict) + breaker view of one card |
+| `attention` | cards awaiting a human (veto/hold/open-question/escalated) |
+| `pause` / `resume` | stop / resume the tick loop |
+| `tick` | request one reconciliation pass now |
+| `retry` | clear a stuck card's **lease**, then request a tick — a nudge, not a re-run or a fix; it does nothing beyond `CLEAR_LEASE` + `tick` |
+
+**No human-gate tools.** There is no `HUMAN_GO`, `CLEAR_VETO`, `veto`, `move`, or `create` tool here
+(by design — A1): the MCP can observe and nudge the loop, but can never cross a human approval gate.
+
+### `yarradev-operator` skill
+
+`skills/yarradev-operator/SKILL.md` — you invoke it (it is **not** a loop-driver) for five runbooks:
+**standup**, **triage-stuck-card**, **attention-sweep**, **incident**, and **cost**. It reads the
+runner MCP above (and the cloud board MCP, where configured) and works under two authority tiers:
+
+- 🟢 **autonomous** — read anything, `pause`/`resume`/`tick`, `retry` a stuck dispatch, post a note:
+  it does these on request without asking again.
+- 🔴 **human-handoff** — `HUMAN_GO`, clearing a veto/hold, answering a question that needs a human
+  decision: it **drafts** the recommendation and **surfaces a cockpit link**; it never executes the
+  gate itself (it structurally can't — those tools aren't exposed to it).
+
+`cost` is **not available in this version**: the runner doesn't capture `claude -p` token usage, so
+there's nothing to report. The skill says so rather than fabricate a number or call a tool that
+doesn't exist.
+
 ## Run (legacy: in-session `/loop`)
 
 The previous way of driving the same reconcile/dispatch logic — from inside an interactive Claude Code
@@ -262,8 +309,13 @@ full end-to-end PR creation lifecycle.
 processes (survives runner restart, reconciles on the next tick) and exposing a localhost-only HTTP
 control plane (`status`/`pause`/`resume`/`tick`/`stop` + a minimal browser monitor). This is now the
 supported driver; the in-session `/loop /yarradev:yarradev-run` procedure is legacy and the old
-machine-local `yarradev-loop` bash wrapper is retired. Not yet shipped in the runner: an MCP-based
-control surface and an in-plugin operator UI (planned as separate follow-on work).
+machine-local `yarradev-loop` bash wrapper is retired.
+
+**Also shipped (P2):** the plugin surface around that daemon — the `yarradev-runner` MCP (10
+read/control tools proxying the control plane above; no human-gate tools) and the
+`yarradev-operator` skill (runbook-driven; drafts + links for human gates, never executes them; cost
+reporting not yet available). See "Plugin surface (component ②)" above for the full tool list and
+authority model.
 
 **Next:** richer cross-stage context persistence (designer's plan → developer), `RENEW` for long jobs,
 multi-card concurrency, the analyst/epic tier, and a GitHub App + dashboard for the hosted board.
