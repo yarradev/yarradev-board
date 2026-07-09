@@ -8,6 +8,7 @@ const LOGS = { type: "object", properties: { card: { type: "string", description
 export const TOOLS = [
   { name: "status",    description: "Runner status: paused, interval, last/next tick, breaker, pass running.", inputSchema: S },
   { name: "inflight",  description: "Cards currently dispatched and unresolved (role, age).", inputSchema: S },
+  { name: "board",     description: "Live status board: cards in-flight + recently resolved/escalated (local state only).", inputSchema: S },
   { name: "recent",    description: "The most recent tick outcome.", inputSchema: S },
   { name: "logs",      description: "The streamed verdict/log text for a card's newest dispatch.", inputSchema: LOGS },
   { name: "explain",   description: "Merged board + local (dispatch/verdict) + breaker view of a card.", inputSchema: CARD },

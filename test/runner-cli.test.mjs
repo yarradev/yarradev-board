@@ -20,7 +20,7 @@ test("clientUrl maps subcommands to control-plane routes", () => {
 
 // #72.1: the read routes the control plane serves as GET must be in the GET set (only status/logs were).
 test("GET set covers every read route the control plane serves", () => {
-  for (const r of ["status", "logs", "inflight", "recent", "attention", "explain", "cost"]) {
+  for (const r of ["status", "logs", "inflight", "recent", "attention", "explain", "cost", "board"]) {
     assert.ok(GET.has(r), `${r} must be a GET route`);
   }
   for (const w of ["pause", "resume", "tick", "retry", "stop"]) {

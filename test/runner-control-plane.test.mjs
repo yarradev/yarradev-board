@@ -66,3 +66,14 @@ test("POST to an unknown action returns 404", async () => {
   assert.deepEqual(await res.json(), { error: "not found" });
   server.close();
 });
+
+test("GET /board returns the assembled board rows from the provider", async () => {
+  const rows = [{ cardId: "c1", role: "designer", state: "in-flight", ageS: 5, last: "dispatched" }];
+  const server = createControlPlane({ provider: { board: async () => rows }, actions: {} });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address();
+  const res = await fetch(`http://127.0.0.1:${port}/board`);
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), rows);
+  server.close();
+});

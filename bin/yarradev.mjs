@@ -2,7 +2,7 @@
 import { loadConfig, makeClient } from "../skills/yarradev-run/scripts/plugin-io.mjs";
 import { createDaemon, spawnPass, startSources } from "../skills/yarradev-run/scripts/runner/daemon.mjs";
 import { createControlPlane } from "../skills/yarradev-run/scripts/runner/control-plane.mjs";
-import { buildStatus, inflightRows } from "../skills/yarradev-run/scripts/runner/state.mjs";
+import { buildStatus, inflightRows, assembleBoard } from "../skills/yarradev-run/scripts/runner/state.mjs";
 import { manifestPath, resolveHome, stateDir } from "../skills/yarradev-run/scripts/runner/paths.mjs";
 import { readBreaker, computeNextTickAt, readVerdict, explainCard, attentionCards, retryCard } from "../skills/yarradev-run/scripts/runner/providers.mjs";
 import { readFileSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
@@ -47,6 +47,7 @@ export function buildProvider({ daemon, config, env, client }) {
       breaker: readBreaker(sdir), passRunning: daemon.passRunning(), now: Date.now(),
     }),
     inflight: () => inflightRows(read(), Date.now(), staleS),
+    board: () => assembleBoard({ activityMap: daemon.getActivity?.() ?? new Map(), manifestContent: read(), now: Date.now(), staleS }),
     recent: () => [daemon.lastTick()].filter(Boolean),
     attention: () => attentionCards({ client }),
     // No usable `claude -p` usage signal exists: claudeArgs (see daemon.mjs/pass.mjs) never passes
@@ -82,7 +83,7 @@ async function run(env = process.env) {
 
 // Read routes the control plane serves as GET (control-plane.mjs:15-21); everything else is POST.
 // Mirrors the runner MCP proxy's route table (mcp/proxy.mjs) so the CLI and MCP agree on method+params.
-export const GET = new Set(["status", "logs", "inflight", "recent", "attention", "explain", "cost"]);
+export const GET = new Set(["status", "logs", "inflight", "recent", "attention", "explain", "cost", "board"]);
 export const COMMANDS = new Set([...GET, "pause", "resume", "tick", "retry", "stop"]);
 
 /** Build the control-plane URL, forwarding a card id as the query param the route expects (#72.2):
@@ -103,6 +104,7 @@ const USAGE = `usage: yarradev <command> [card]
   recent                     the most recent tick outcome
   attention                  cards awaiting a human (veto/hold/open-question/escalated)
   cost                       best-effort cost (unavailable in this version)
+  board                      live status board: cards in-flight + recently resolved/escalated
   logs <card>                streamed verdict/log text for a card's newest dispatch
   explain <card>             merged board + local + breaker view of a card
   pause | resume | tick      control the tick loop
