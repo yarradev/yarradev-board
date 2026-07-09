@@ -65,14 +65,21 @@ Or load locally during development by enabling the plugin from this checkout.
    persistently** — role subagents share the machine and could read an exported token.
 
 `config/board.json` is gitignored. `board.example.json` ships the **full lifecycle**
-`spec→dev→test→done→staging→prod`: `spec` (judgement → designer), `dev` (mechanical **CI gate** + a
-**security-advisor** watching protected paths → developer), `test` (judgement → tester), `done` (the
-**releaser** runs `deploy.staging` → staging), `staging→prod` (**human GO** required), `prod` (terminal).
-Defaults: `apiBase http://localhost:8802`, `doName acme:flow`, pace `{ maxCardsPerPass:1, claimTtlS:1800,
-minLoopIntervalS:300 }`, budgets `{ transition_budget:50, bounce_limit:3, respawn_window_ms:60000 }`,
-`deploy.staging` (your staging-deploy command; empty by default → the releaser escalates to configure it).
-The **headless runner** also reads a `runner` block: `{ port:4599, passTimeout:120, debounceMs:750 }` —
-see "Headless runner (supported)" below for what each field does.
+`backlog→spec→dev→test→done→staging→prod` plus an **epic tier** (`epic_analysis→epic_decompose→
+epic_integrating→epic_done`): `backlog`/`spec` (judgement → designer), `dev` (mechanical **CI gate** + a
+**security-advisor** watching protected paths → developer), `test` (judgement → tester, with a
+**code-reviewer** advisor watching `**`), `done` (judgement → the **releaser** runs `deploy.staging` →
+staging, with a **devops** advisor watching deploy/config paths), `staging→prod` (**human GO** required),
+`prod` (terminal); the `epic_*` stages run the **analyst** (brief → decompose → fan-in barrier → done).
+Defaults: `apiBase http://localhost:8802`, `doName acme:flow`, pace `{ maxCardsPerPass:3, maxConcurrent:4,
+breakerCooldownS:600, claimTtlS:1800, minLoopIntervalS:300 }`, budgets `{ bounce_limit:3,
+per_edge_overrides:{} }` (the older `transition_budget`/`respawn_window_ms` keys were struck — the live
+transition backstop and CI-stall respawn window are `decide()`'s client-side `DEFAULT_BUDGETS`, not this
+file), `runtime { inflightStaleS:7200, dispatchMode:"external" }`, `deploy.staging` (your staging-deploy
+command; empty by default → the releaser escalates to configure it). The **headless runner** also reads a
+`runner` block: `{ port:4599, passTimeout:120, debounceMs:750 }` — see "Headless runner (supported)"
+below for what each field does. Per-role dispatch overrides (model/effort/worktree/subagentType) go in an
+optional `roles` block (GH #53).
 
 > The plugin lifecycle's `gate` tags (`mechanical`/`human`) are **routing hints for `decide()` only**.
 > The board's real enforcement is the compiled `GateExpr` on each transition edge, and the two must
@@ -274,8 +281,9 @@ Include:
 
 ## Scope and what's next
 
-**Shipped** — the orchestrator skill + `designer`/`developer`/`tester` + `security-advisor` + `releaser`
-agents driving the full lifecycle `spec→dev→test→done→staging→prod`:
+**Shipped** — the orchestrator skill + `designer`/`developer`/`tester` + `security-advisor` +
+`code-reviewer` + `devops` + `releaser` agents driving the full lifecycle
+`backlog→spec→dev→test→done→staging→prod`:
 
 - **judgement** stages (spec, test) — the subagent's verdict drives MOVE/REJECT (backward edges are
   REJECT; intent rides the card `title`; the tester finds the dev branch by `cardId`);
@@ -283,13 +291,19 @@ agents driving the full lifecycle `spec→dev→test→done→staging→prod`:
   via the GitHub webhook, then auto-advances (no re-spawn); a red CI re-spawns the developer (`PUSH`),
   time-bounded by `respawn_window_ms`;
 - **bounce / transition budgets** — `decide()` parks a card for a human (`escalate` via `ASK`) when the
-  board's per-edge bounce budget or the global `transition_budget` is exhausted;
+  board's per-edge bounce budget or the client-side transition backstop (`DEFAULT_BUDGETS`) is exhausted;
+- **bounded multi-card fan-out** — a pass dispatches up to `pace.maxCardsPerPass` (default 3) new cards,
+  ceilinged by `pace.maxConcurrent` (default 4) in-flight dispatches, with a `529` gateway-outage circuit
+  breaker (`breakerCooldownS`);
 - a **security-advisor with VETO/HOLD** — joins `dev` when changed files match its `watch_paths`; a VETO
   blocks dev→test (board `no_open_veto` gate + a `decide` park) until a `clear_authority` signatory
   CLEARs it;
 - a **releaser staging deploy** — at `done` the releaser runs the configured `deploy.staging` command in
   an isolated worktree, returns a verdict, and the orchestrator MOVEs the card to `staging` (a failed
   deploy rejects to `dev`); the releaser never touches production.
+- **advisory reviewers** — a **code-reviewer** joins `test` (watches `**`) and a **devops** advisor joins
+  `done` (watches `wrangler.*`/`*.toml`/`deploy.*`/config paths); like the security-advisor they can
+  `VETO`/`HOLD` the outgoing transition until a `clear_authority` signatory clears it.
 - a **human production gate** — `staging→prod` requires a `byKind:human` `HUMAN_GO` (`promote`); agents
   cannot self-approve a release;
 - **per-role board identities (least privilege)** — each act is posted under the role that produced it via
@@ -317,5 +331,9 @@ read/control tools proxying the control plane above; no human-gate tools) and th
 reporting not yet available). See "Plugin surface (component ②)" above for the full tool list and
 authority model.
 
+**Wired but not yet battle-tested:** the 4-stage **epic tier** (`epic_analysis→epic_decompose→
+epic_integrating→epic_done`, driven by the **analyst** with a fan-in `barrier` gate) ships in
+`board.example.json` but hasn't been exercised end-to-end against a live board.
+
 **Next:** richer cross-stage context persistence (designer's plan → developer), `RENEW` for long jobs,
-multi-card concurrency, the analyst/epic tier, and a GitHub App + dashboard for the hosted board.
+hardening the epic/analyst tier, and a GitHub App + dashboard for the hosted board.
