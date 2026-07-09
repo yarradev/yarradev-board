@@ -33,7 +33,19 @@ test("spawnPass counts routed-outcome reconcile lines from JSON-line stdout, tol
     child.emit("close", 0, null);
   });
   const result = await p;
-  assert.deepEqual(result, { ok: true, verdicts: 2, error: undefined });
+  // spawnPass stamps `events` with Date.now() at close time (it's runtime code, not a pure
+  // helper), so we can't deep-equal the whole resolve object against a literal. Assert
+  // ok/verdicts/error directly, then assert the events' shape with `at` stripped (and
+  // separately that every `at` is a real timestamp).
+  assert.equal(result.ok, true);
+  assert.equal(result.verdicts, 2);
+  assert.equal(result.error, undefined);
+  assert.deepEqual(result.events.map(({ at, ...rest }) => rest), [
+    { cardId: "c1", role: null, state: null, to: null, event: "reconcile", outcome: "routed", detail: null },
+    { cardId: "c2", role: null, state: null, to: null, event: "reconcile", outcome: "skipped", detail: null },
+    { cardId: "c3", role: null, state: null, to: null, event: "reconcile", outcome: "routed", detail: null },
+  ]);
+  assert.ok(result.events.every((e) => typeof e.at === "number"));
 });
 
 test("spawnPass reports ok:false with the exit code on a nonzero exit", async () => {

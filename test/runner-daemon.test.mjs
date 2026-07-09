@@ -38,3 +38,11 @@ test("startSources debounces manifest events into one tick", async () => {
   assert.equal(ticks, 1);
   stop();
 });
+
+test("createDaemon folds pass events into an activity map exposed via getActivity()", async () => {
+  const events = [{ cardId: "c1", event: "reconcile", outcome: "routed", detail: "dev→test", at: 1 }];
+  const daemon = createDaemon({ runPass: async () => ({ ok: true, verdicts: 1, events }), intervalMs: 1000, now: () => 5 });
+  await daemon.requestTick();
+  await daemon._drain();
+  assert.equal(daemon.getActivity().get("c1").detail, "dev→test");
+});
