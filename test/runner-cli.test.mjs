@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, watch } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildActions, clientUrl, ensureManifestFile } from "../bin/yarradev.mjs";
+import { buildActions, buildProvider, clientUrl, ensureManifestFile } from "../bin/yarradev.mjs";
 
 test("buildActions.pause pauses the daemon", () => {
   let paused = false;
@@ -68,4 +68,23 @@ test("ensureManifestFile does not clobber an existing non-empty manifest file", 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("buildActions.retry clears the lease via the client then ticks", async () => {
+  let ticked = 0;
+  const daemon = { requestTick: () => { ticked++; } };
+  const client = { calls: [], async getEnriched() { return { current_gen: 4 }; }, async clearLease(id, gen) { this.calls.push([id, gen]); } };
+  const actions = buildActions({ daemon, client });
+  const params = new URLSearchParams({ card: "c1" });
+  assert.deepEqual(await actions.retry(params), { ok: true, cardId: "c1", clearedGen: 4 });
+  assert.deepEqual(client.calls, [["c1", 4]]);
+  assert.equal(ticked, 1);
+});
+
+test("buildProvider.status reflects the real breaker file", async () => {
+  const daemon = { isPaused: () => false, lastTick: () => ({ at: 1000, ok: true }), passRunning: () => false };
+  const provider = buildProvider({ daemon, config: { pace: { minLoopIntervalS: 300 } }, env: { YARRADEV_STATE_DIR: "/nonexistent-state" }, client: {} });
+  const s = await provider.status();
+  assert.equal(s.breaker, "CLOSED"); // absent file → CLOSED
+  assert.equal(typeof s.nextTickInS, "number");
 });

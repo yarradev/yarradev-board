@@ -17,6 +17,14 @@ live-streamed verdict output) live under the platform data dir (`$XDG_DATA_HOME/
 `YARRADEV_STATE_DIR`), never inside this repo. The runner makes **zero model calls** itself — see the
 plugin `README.md`'s "Headless runner (supported)" section for the full reference.
 
+**Plugin surface (component ②).** Besides this conductor skill and the CLI daemon above, installing
+the plugin also gives you a `yarradev-runner` MCP (10 read/control tools proxying the daemon's
+control plane — `status`/`inflight`/`recent`/`logs`/`explain`/`attention`/`pause`/`resume`/`tick`/
+`retry`; no human-gate tools) and a `yarradev-operator` skill you invoke for standup / triage-stuck-
+card / attention-sweep / incident / cost runbooks (drafts + a cockpit link for human gates, never
+executes them; cost reporting isn't available yet). See the plugin `README.md`'s "Plugin surface
+(component ②)" section for the full reference.
+
 **Legacy: the in-session `/loop /yarradev:yarradev-run` procedure below.** This remains available as a
 manual/interactive fallback (e.g. for debugging a single pass step-by-step inside a live session) and as
 the **parity reference** `pass.mjs` implements, but it is no longer the supported way to run the
