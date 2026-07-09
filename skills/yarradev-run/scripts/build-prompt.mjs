@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * build-prompt.mjs <role> <cardId> [--to <to>] [--out <path>] [--extras-file <path>]
+ * build-prompt.mjs <role> <cardId> [--to <to>] [--mode <mode>] [--out <path>] [--extras-file <path>]
  *
  * Composes + writes the dispatch prompt file for a role subagent, so the conductor doesn't hand-assemble it
  * (GH A5). Two wins:
@@ -37,11 +37,24 @@ function noteBody(n) {
 }
 
 /**
+ * Map a stage's board gate to the developer's `mode` input (GH #73). The `dev` stage's gate is the string
+ * "mechanical" (developer pushes + `gh pr create` → `submitted`, so CI decides); every other gate — or an
+ * absent gate — is "judgement" (branch only → `advance`, the tester decides). Without this line the
+ * developer defaults to judgement, skips `gh pr create`, and mechanical dev cards jam at dev→test with
+ * `ci_rollup: absent` because no PR ever created the check_run that `ci_green` needs.
+ * @param {string|undefined|null} gate
+ * @returns {"mechanical"|"judgement"}
+ */
+export function modeForGate(gate) {
+  return gate === "mechanical" ? "mechanical" : "judgement";
+}
+
+/**
  * Pure prompt composer (testable with a fake card — no board, no fs).
- * @param {{role: string, card: any, doName: string, to: string, extras?: string}} ctx
+ * @param {{role: string, card: any, doName: string, to: string, mode?: string, extras?: string}} ctx
  * @returns {string} the prompt body
  */
-export function composePrompt({ role, card, doName, to, extras }) {
+export function composePrompt({ role, card, doName, to, mode, extras }) {
   const c = card ?? {};
   const lines = [];
   lines.push("=== Dispatch context ===");
@@ -50,6 +63,9 @@ export function composePrompt({ role, card, doName, to, extras }) {
   lines.push(`state: ${c.state ?? ""}`);
   lines.push(`to: ${to ?? ""}`);
   lines.push(`role: ${role ?? ""}`);
+  // The developer reads `mode` (mechanical → push + gh pr create → submitted; judgement → branch → advance).
+  // Default judgement matches agents/developer.md when no mode is passed (GH #73).
+  lines.push(`mode: ${mode ?? "judgement"}`);
   lines.push(`title: ${c.title ?? ""}`);
   lines.push("");
   const notes = Array.isArray(c.notes) ? c.notes : [];
@@ -76,20 +92,25 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const a = argv[i];
     if (a === "--to") opts.to = argv[++i];
     else if (a === "--out") opts.out = argv[++i];
+    else if (a === "--mode") opts.mode = argv[++i];
     else if (a === "--extras-file") opts.extrasFile = argv[++i];
     else opts.positional.push(a);
   }
   const [role, cardId] = opts.positional;
   if (!role || !cardId) {
-    console.error("usage: build-prompt.mjs <role> <cardId> [--to <to>] [--out <path>] [--extras-file <path>]");
+    console.error("usage: build-prompt.mjs <role> <cardId> [--to <to>] [--mode <mode>] [--out <path>] [--extras-file <path>]");
     process.exit(2);
   }
   const cfg = loadConfig();
   const card = await makeClient({ role: "orchestrator" }).getEnriched(cardId);
-  const to = opts.to ?? cfg.lifecycle?.[card?.state]?.to;
+  const stage = cfg.lifecycle?.[card?.state];
+  const to = opts.to ?? stage?.to;
+  // Derive `mode` from the stage's gate (GH #73) so mechanical dev cards get `gh pr create`; an explicit
+  // --mode overrides (e.g. a respawn or a caller that already knows the mode).
+  const mode = opts.mode ?? modeForGate(stage?.gate);
   const extras = opts.extrasFile ? readFileSync(opts.extrasFile, "utf8") : undefined;
   const out = opts.out ?? `/tmp/yarradev-prompt-${cardId}.txt`;
-  writeFileSync(out, composePrompt({ role, card, doName: cfg.doName, to, extras }));
+  writeFileSync(out, composePrompt({ role, card, doName: cfg.doName, to, mode, extras }));
   process.stdout.write(out + "\n");
   process.exit(0);
 }
