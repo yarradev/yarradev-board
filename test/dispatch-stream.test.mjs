@@ -29,6 +29,8 @@ function fakeSpawnWithStdin(code) {
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   child.stdin = new PassThrough();
+  child.killCalls = 0;
+  child.kill = () => { child.killCalls += 1; };
   return child;
 }
 
@@ -47,16 +49,20 @@ test("streamClaude rejects (not crashes) when promptPath doesn't exist (ENOENT o
   const dir = mkdtempSync(join(tmpdir(), "yd-stream-enoent-"));
   const verdictPath = join(dir, "verdict.txt");
   const missingPromptPath = join(dir, "does-not-exist.txt");
+  const child = fakeSpawnWithStdin(0);
   await assert.rejects(
     streamClaude({
       claudeBin: "claude",
       args: [],
       promptPath: missingPromptPath,
       verdictPath,
-      spawn: () => fakeSpawnWithStdin(0),
+      spawn: () => child,
     }),
     /ENOENT/,
   );
+  // Regression: the spawned `claude` child must be killed on this error path — otherwise it's an
+  // orphaned second live writer into the worktree (compounds the manifest double-dispatch risk).
+  assert.equal(child.killCalls, 1);
 });
 
 test("streamClaude rejects (not crashes) when child.stdin errors (e.g. EPIPE from an early-closing child)", async () => {
@@ -73,6 +79,8 @@ test("streamClaude rejects (not crashes) when child.stdin errors (e.g. EPIPE fro
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   child.stdin = new PassThrough();
+  child.killCalls = 0;
+  child.kill = () => { child.killCalls += 1; };
 
   await assert.rejects(
     (async () => {
@@ -89,4 +97,6 @@ test("streamClaude rejects (not crashes) when child.stdin errors (e.g. EPIPE fro
     })(),
     /EPIPE/,
   );
+  // Regression: the spawned `claude` child must be killed on this error path too.
+  assert.equal(child.killCalls, 1);
 });

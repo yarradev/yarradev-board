@@ -46,8 +46,11 @@ export function spawnPass({ passPath, env, timeoutMs = 120_000, spawn = nodeSpaw
     });
     child.on("close", (code, signal) => {
       clearTimeout(timer);
+      // pass.mjs's reconcile lines carry a STRING `outcome` ("routed"|"skipped"|"dispatch_error"|
+      // "no-parse"|"act_failed"|"error" — see reconcileVerdicts' results.push shape), never a numeric
+      // `routed` field. Count one per successfully-routed verdict line.
       let verdicts = 0;
-      for (const line of out.split("\n")) { try { const j = JSON.parse(line); if (j?.phase === "reconcile" && typeof j.routed === "number") verdicts += j.routed; } catch {} }
+      for (const line of out.split("\n")) { try { const j = JSON.parse(line); if (j?.phase === "reconcile" && j.outcome === "routed") verdicts += 1; } catch {} }
       resolve({ ok: !killed && code === 0, verdicts, error: killed ? "pass timeout" : (code === 0 ? undefined : `exit ${code ?? signal}`) });
     });
   });

@@ -392,14 +392,21 @@ export function streamClaude({ claudeBin, args, promptPath, verdictPath, spawn: 
     const out = createWriteStream(verdictPath, { flags: "w" });
     out.on("error", (e) => reject(e));
     const child = sp(claudeBin, args, { stdio: ["pipe", "pipe", "pipe"] });
+    // On a promptPath/stdin error we bail out of the promise, but the spawned `claude` child is
+    // still alive unless we kill it — an orphaned child left running is a SECOND live writer into
+    // the worktree (compounds the manifest-split-brain double-dispatch risk). Guarded: the child
+    // may already be dead / kill() may not exist on the fakes used in tests.
+    const killChild = () => { try { child.kill?.(); } catch { /* best-effort — already dead */ } };
     if (promptPath && child.stdin) {
       child.stdin.on("error", (e) => {
         out.end();
+        killChild();
         reject(e);
       });
       createReadStream(promptPath)
         .on("error", (e) => {
           out.end();
+          killChild();
           reject(e);
         })
         .pipe(child.stdin);
