@@ -1,0 +1,7 @@
+<!doctype html><meta charset=utf8><title>yarradev-run</title>
+<style>body{font:14px system-ui;margin:2rem;max-width:44rem}code{background:#eee;padding:.1rem .3rem}</style>
+<h1>yarradev-run</h1><pre id=s>loading…</pre>
+<script>
+async function tick(){try{const r=await fetch('/status');document.getElementById('s').textContent=JSON.stringify(await r.json(),null,2)}catch(e){document.getElementById('s').textContent=String(e)}}
+tick();setInterval(tick,3000);
+</script>
