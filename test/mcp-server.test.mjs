@@ -1,6 +1,9 @@
 // test/mcp-server.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { TOOLS, handleMessage } from "../skills/yarradev-run/scripts/mcp/server.mjs";
 import { route, makeCall } from "../skills/yarradev-run/scripts/mcp/proxy.mjs";
 
@@ -67,4 +70,13 @@ test("makeCall throws a clear error when the runner is unreachable", async () =>
   const fetchImpl = async () => { throw new Error("ECONNREFUSED"); };
   const call = await makeCall({ port: 4599, fetchImpl });
   await assert.rejects(call("status", {}), /runner not reachable on 127\.0\.0\.1:4599/);
+});
+
+test("plugin.json declares the runner MCP stdio server from the plugin root", () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const pj = JSON.parse(readFileSync(join(root, ".claude-plugin/plugin.json"), "utf8"));
+  const s = pj.mcpServers?.["yarradev-runner"];
+  assert.ok(s, "yarradev-runner MCP server must be declared");
+  assert.equal(s.command, "node");
+  assert.ok(s.args.some((a) => a.includes("${CLAUDE_PLUGIN_ROOT}") && a.endsWith("mcp/server.mjs")));
 });

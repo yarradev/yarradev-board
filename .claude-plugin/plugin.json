@@ -6,5 +6,12 @@
   "homepage": "https://github.com/yarradev/yarradev-board",
   "repository": "https://github.com/yarradev/yarradev-board",
   "license": "MIT",
+  "mcpServers": {
+    "yarradev-runner": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts/mcp/server.mjs"],
+      "cwd": "${CLAUDE_PLUGIN_ROOT}"
+    }
+  },
   "keywords": ["sdlc", "orchestration", "agents", "reconciliation-loop", "yarradev"]
 }
