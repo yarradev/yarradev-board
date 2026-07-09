@@ -80,7 +80,7 @@ test("retryCard clears the lease at current_gen then ticks", async () => {
   const client = fakeClient([{ id: "c1", current_gen: 9 }]);
   let ticked = 0;
   const out = await retryCard("c1", { client, requestTick: () => { ticked++; } });
-  assert.deepEqual(out, { ok: true, cardId: "c1", clearedGen: 9 });
+  assert.deepEqual(out, { ok: true, outcome: null, cardId: "c1", clearedGen: 9 });
   assert.deepEqual(client.calls.clearLease, [["c1", 9]]);
   assert.equal(ticked, 1);
 });
@@ -89,7 +89,55 @@ test("retryCard on an unknown card ticks but reports no gen cleared", async () =
   const client = fakeClient([]);
   let ticked = 0;
   const out = await retryCard("cX", { client, requestTick: () => { ticked++; } });
-  assert.deepEqual(out, { ok: true, cardId: "cX", clearedGen: null });
+  assert.deepEqual(out, { ok: true, outcome: null, cardId: "cX", clearedGen: null });
   assert.equal(client.calls.clearLease.length, 0);
   assert.equal(ticked, 1);
+});
+
+// #69.1: a rejected CLEAR_LEASE (server said applied:false) must be reported as ok:false, not a fake success.
+test("retryCard reports ok:false when the lease clear is rejected", async () => {
+  const client = {
+    calls: { clearLease: [] },
+    async getEnriched() { return { id: "c1", current_gen: 5 }; },
+    async clearLease(id, gen) { this.calls.clearLease.push([id, gen]); return { applied: false, outcome: "fenced" }; },
+  };
+  let ticked = 0;
+  const out = await retryCard("c1", { client, requestTick: () => { ticked++; } });
+  assert.deepEqual(out, { ok: false, outcome: "fenced", cardId: "c1", clearedGen: 5 });
+  assert.equal(ticked, 1); // still ticks — retry is best-effort
+});
+
+// #69.2: one card's enrich throw must not abort the sweep — the bad card is surfaced, the rest read fine.
+test("attentionCards keeps sweeping when a single getEnriched throws", async () => {
+  const client = {
+    async listCards() { return [{ id: "a", state: "dev" }, { id: "b", state: "test" }]; },
+    async getEnriched(id) {
+      if (id === "a") throw new Error("boom");
+      return { id: "b", veto_held: true, state: "test" };
+    },
+  };
+  const rows = await attentionCards({ client });
+  const a = rows.find((r) => r.cardId === "a");
+  const b = rows.find((r) => r.cardId === "b");
+  assert.deepEqual(a, { cardId: "a", state: "dev", reasons: ["enrich_failed"] });
+  assert.ok(b.reasons.includes("veto_held"));
+});
+
+// #69.5 branch coverage: readBreaker HALF_OPEN; readVerdict when the verdict file is missing.
+test("readBreaker returns HALF_OPEN verbatim", () => {
+  const deps = { existsSync: () => true, readFileSync: () => JSON.stringify({ state: "HALF_OPEN" }) };
+  assert.equal(readBreaker("/s", deps), "HALF_OPEN");
+});
+
+test("readVerdict returns empty string when the verdict file is missing", () => {
+  const m = JSON.stringify({ status: "done", cardId: "c1", verdictPath: "/v/gone" });
+  const deps = { existsSync: () => false, readFileSync: () => { throw new Error("should not read"); } };
+  assert.equal(readVerdict(m, "c1", deps), "");
+});
+
+// #69.5 branch coverage: attention card that is blocked but has no open questions → no open_question reason.
+test("attentionCards omits open_question when blocked with no open questions", async () => {
+  const client = fakeClient([{ id: "z", state: "dev", blocked: true, open_questions: [] }]);
+  const rows = await attentionCards({ client });
+  assert.equal(rows.length, 0); // blocked alone (no open_questions, no veto/hold/escalate) is not human-attention
 });

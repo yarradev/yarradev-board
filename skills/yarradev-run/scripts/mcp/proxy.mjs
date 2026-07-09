@@ -4,7 +4,10 @@ const GET = new Set(["status", "inflight", "recent", "logs", "explain", "attenti
 export function route(name, args = {}) {
   const method = GET.has(name) ? "GET" : "POST";
   let path = `/${name}`;
-  if (name === "logs" && args.id != null) path += `?id=${encodeURIComponent(args.id)}`;
+  // logs is unified on `card` (#69.3) but still accepts the legacy `id` alias; the control plane wire
+  // param stays ?id=.
+  const logsId = name === "logs" ? (args.card ?? args.id) : null;
+  if (logsId != null) path += `?id=${encodeURIComponent(logsId)}`;
   if ((name === "explain" || name === "retry") && args.card != null) path += `?card=${encodeURIComponent(args.card)}`;
   return { method, path };
 }
