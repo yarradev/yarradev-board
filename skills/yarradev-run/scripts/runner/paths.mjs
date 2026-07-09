@@ -18,6 +18,6 @@ export function logDir(env = process.env) {
 export function resolveHome(env = process.env) {
   if (env.YARRADEV_HOME) return env.YARRADEV_HOME;
   if (env.CLAUDE_PLUGIN_ROOT) return env.CLAUDE_PLUGIN_ROOT;
-  // this file is <root>/skills/yarradev-run/scripts/runner/paths.mjs → up 4
+  // this file is <root>/skills/yarradev-run/scripts/runner/paths.mjs → strip filename + 4 dirs (runner→scripts→yarradev-run→skills→root)
   return dirname(dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))));
 }
