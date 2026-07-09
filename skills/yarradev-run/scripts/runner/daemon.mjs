@@ -34,11 +34,21 @@ export function spawnPass({ passPath, env, timeoutMs = 120_000, spawn = nodeSpaw
     let out = ""; let killed = false;
     const timer = setTimeout(() => { killed = true; child.kill("SIGKILL"); }, timeoutMs);
     child.stdout.on("data", (d) => { out += d.toString(); });
-    child.on("close", (code) => {
+    // Drain stderr so a chatty pass can't fill the pipe buffer and block the child; we don't
+    // need its contents (verdicts are parsed from stdout only).
+    child.stderr.on("data", () => {});
+    // If spawn() itself fails to launch the process (EMFILE/ENOMEM/EACCES/ENOENT), Node emits
+    // only 'error' — 'close' never fires — so without this handler the promise (and the
+    // timeoutMs guard, which just kills an already-nonexistent process) hangs forever.
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      resolve({ ok: false, verdicts: 0, error: String(e?.message ?? e) });
+    });
+    child.on("close", (code, signal) => {
       clearTimeout(timer);
       let verdicts = 0;
       for (const line of out.split("\n")) { try { const j = JSON.parse(line); if (j?.phase === "reconcile" && typeof j.routed === "number") verdicts += j.routed; } catch {} }
-      resolve({ ok: !killed && code === 0, verdicts, error: killed ? "pass timeout" : (code === 0 ? undefined : `exit ${code}`) });
+      resolve({ ok: !killed && code === 0, verdicts, error: killed ? "pass timeout" : (code === 0 ? undefined : `exit ${code ?? signal}`) });
     });
   });
 }
