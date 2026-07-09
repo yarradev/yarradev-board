@@ -65,32 +65,73 @@ async function run(env = process.env) {
   const intervalMs = (config.pace?.minLoopIntervalS ?? 300) * 1000;
   const runPass = () => spawnPass({ passPath, env: { ...env, YARRADEV_HOME: home }, timeoutMs: (config.runner?.passTimeout ?? 120) * 1000 });
   const daemon = createDaemon({ runPass, intervalMs });
-  const client = makeClient({ role: "orchestrator" });
+  // Named boardClient (not `client`) to avoid shadowing the module-level CLI helper `client(cmd, port)`
+  // used by the thin-client dispatch below (#69.4).
+  const boardClient = makeClient({ role: "orchestrator" });
   // Touch the manifest file BEFORE startSources() so fs.watch() attaches on a fresh machine (see
   // ensureManifestFile's docstring) — otherwise the watch silently never activates.
   ensureManifestFile(env);
   const stopSources = startSources(daemon, { manifestFile: manifestPath(env), intervalMs, debounceMs: config.runner?.debounceMs ?? 750 });
   let server;
-  const actions = buildActions({ daemon, client, stopSources, getServer: () => server });
-  server = createControlPlane({ provider: buildProvider({ daemon, config, env, client }), actions });
+  const actions = buildActions({ daemon, client: boardClient, stopSources, getServer: () => server });
+  server = createControlPlane({ provider: buildProvider({ daemon, config, env, client: boardClient }), actions });
   const port = config.runner?.port ?? 4599;
   server.listen(port, "127.0.0.1", () => process.stderr.write(`yarradev-run: control plane on http://127.0.0.1:${port}\n`));
   daemon.requestTick(); // first pass immediately
 }
 
-export function clientUrl(cmd, port) { return `http://127.0.0.1:${port}/${cmd}`; }
-const GET = new Set(["status", "logs"]);
-async function client(cmd, port) {
-  const r = await fetch(clientUrl(cmd, port), { method: GET.has(cmd) ? "GET" : "POST" });
+// Read routes the control plane serves as GET (control-plane.mjs:15-21); everything else is POST.
+// Mirrors the runner MCP proxy's route table (mcp/proxy.mjs) so the CLI and MCP agree on method+params.
+export const GET = new Set(["status", "logs", "inflight", "recent", "attention", "explain", "cost"]);
+export const COMMANDS = new Set([...GET, "pause", "resume", "tick", "retry", "stop"]);
+
+/** Build the control-plane URL, forwarding a card id as the query param the route expects (#72.2):
+ *  logs → ?id=<card>; explain/retry → ?card=<card>. Other routes ignore the extra arg. */
+export function clientUrl(cmd, port, arg) {
+  let path = `/${cmd}`;
+  if (arg != null && arg !== "") {
+    if (cmd === "logs") path += `?id=${encodeURIComponent(arg)}`;
+    else if (cmd === "explain" || cmd === "retry") path += `?card=${encodeURIComponent(arg)}`;
+  }
+  return `http://127.0.0.1:${port}${path}`;
+}
+
+const USAGE = `usage: yarradev <command> [card]
+  run                        start the runner daemon (control plane + tick loop)
+  status                     paused / interval / last+next tick / breaker
+  inflight                   cards dispatched and unresolved
+  recent                     the most recent tick outcome
+  attention                  cards awaiting a human (veto/hold/open-question/escalated)
+  cost                       best-effort cost (unavailable in this version)
+  logs <card>                streamed verdict/log text for a card's newest dispatch
+  explain <card>             merged board + local + breaker view of a card
+  pause | resume | tick      control the tick loop
+  retry <card>               clear a stuck card's lease and request a tick
+  stop                       stop the daemon`;
+
+async function client(cmd, port, arg) {
+  let r;
+  try {
+    r = await fetch(clientUrl(cmd, port, arg), { method: GET.has(cmd) ? "GET" : "POST" });
+  } catch (e) {
+    // No daemon (ECONNREFUSED) or other transport failure → friendly message, not an uncaught rejection (#72.3).
+    const cause = e?.cause?.code ?? e?.cause?.message ?? e?.message ?? e;
+    process.stderr.write(`runner not running — start it with \`kdbx run -- yarradev run\` (${cause})\n`);
+    process.exit(1);
+  }
   process.stdout.write(JSON.stringify(await r.json(), null, 2) + "\n");
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const cmd = process.argv[2] ?? "run";
   if (cmd === "run") run();
-  else {
+  else if (cmd === "help" || cmd === "--help" || cmd === "-h") process.stdout.write(USAGE + "\n");
+  else if (!COMMANDS.has(cmd)) {
+    process.stderr.write(`unknown command: ${cmd}\n\n${USAGE}\n`);
+    process.exit(2);
+  } else {
     const config = loadConfig();
     const port = config.runner?.port ?? 4599;
-    client(cmd, port);
+    client(cmd, port, process.argv[3]);
   }
 }

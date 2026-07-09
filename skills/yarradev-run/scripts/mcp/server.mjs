@@ -1,13 +1,15 @@
 // skills/yarradev-run/scripts/mcp/server.mjs
 const S = { type: "object", properties: {}, additionalProperties: false };
+// All per-card tools take the same card id under the arg `card` (#69.3). `logs` also accepts the legacy
+// `id` arg (the proxy maps either to the control plane's ?id=), so older callers keep working.
 const CARD = { type: "object", properties: { card: { type: "string", description: "card id" } }, required: ["card"], additionalProperties: false };
-const ID = { type: "object", properties: { id: { type: "string", description: "card id" } }, required: ["id"], additionalProperties: false };
+const LOGS = { type: "object", properties: { card: { type: "string", description: "card id" }, id: { type: "string", description: "card id (deprecated alias for card)" } }, additionalProperties: false };
 
 export const TOOLS = [
   { name: "status",    description: "Runner status: paused, interval, last/next tick, breaker, pass running.", inputSchema: S },
   { name: "inflight",  description: "Cards currently dispatched and unresolved (role, age).", inputSchema: S },
   { name: "recent",    description: "The most recent tick outcome.", inputSchema: S },
-  { name: "logs",      description: "The streamed verdict/log text for a card's newest dispatch.", inputSchema: ID },
+  { name: "logs",      description: "The streamed verdict/log text for a card's newest dispatch.", inputSchema: LOGS },
   { name: "explain",   description: "Merged board + local (dispatch/verdict) + breaker view of a card.", inputSchema: CARD },
   { name: "attention", description: "Cards awaiting a human (veto/hold/open-question/escalated).", inputSchema: S },
   { name: "pause",     description: "Pause the tick loop.", inputSchema: S },

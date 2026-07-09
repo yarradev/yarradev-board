@@ -12,7 +12,26 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { routeVerdict, rejectTargetOf } from "../skills/yarradev-run/scripts/pass.mjs";
+import { routeVerdict, rejectTargetOf, isTransientActFailure } from "../skills/yarradev-run/scripts/pass.mjs";
+
+// ---- #65: transient-vs-deterministic act-failure classifier (pure) -------------
+test("isTransientActFailure: network/429/5xx/409 → transient; 422/403/unknown → deterministic", () => {
+  // transient (do NOT park)
+  assert.equal(isTransientActFailure(null), true);
+  assert.equal(isTransientActFailure(undefined), true);
+  assert.equal(isTransientActFailure({ outcome: "error", status: 1 }), true); // client threw
+  assert.equal(isTransientActFailure({ status: 429 }), true);
+  assert.equal(isTransientActFailure({ status: 500 }), true);
+  assert.equal(isTransientActFailure({ status: 502 }), true);
+  assert.equal(isTransientActFailure({ status: 503 }), true);
+  assert.equal(isTransientActFailure({ status: 529 }), true);
+  assert.equal(isTransientActFailure({ status: 409, outcome: "fenced" }), true); // gen moved on
+  // deterministic (park)
+  assert.equal(isTransientActFailure({ status: 422, outcome: "bad_act" }), false);
+  assert.equal(isTransientActFailure({ status: 403, outcome: "unauthorized" }), false);
+  assert.equal(isTransientActFailure({ status: 400 }), false);
+  assert.equal(isTransientActFailure({ outcome: "gate_blocked" }), false); // no status → safe default: park
+});
 
 // ---- mock factories -------------------------------------------------------------
 
@@ -604,14 +623,65 @@ test("routeVerdict: reject bounce-budget → its OWN escalate, actFailed NOT set
   assert.equal(r.acts.filter(([s]) => s === "escalate.mjs").length, 1);
 });
 
-test("routeVerdict: submitted link-pr fail → actFailed + escalate; reattach-ci stays best-effort (#59)", async () => {
+test("routeVerdict: submitted link-pr DETERMINISTIC fail (422) → actFailed + escalate; reattach-ci skipped (#59/#65)", async () => {
   const r = await route({
     verdict: { status: "submitted", evidence: { repo: "o/r", pr_number: 5, head: "h" } },
     ctx: { id: "c1", role: "developer", state: "dev", gen: "1", kind: "work" },
     overrides: { run: async (s) => (s === "link-pr.mjs" ? { ok: false, status: 422 } : { ok: true }) },
   });
   assert.ok(r.actFailed, "link-pr failure surfaced");
-  assert.ok(r.acts.some(([s]) => s === "escalate.mjs"), "link-pr failure escalates");
+  assert.ok(r.acts.some(([s]) => s === "escalate.mjs"), "deterministic 422 link-pr failure escalates");
+  // #65 tidy-up: a failed submit never created the pr_link, so reattach-ci (which needs that row) is skipped.
+  assert.ok(!r.acts.some(([s]) => s === "reattach-ci.mjs"), "reattach-ci must be skipped after a failed link-pr");
+});
+
+// #65: transient board blips (429/5xx/network) on link-pr/push must NOT park — the highest-frequency
+// reconcile-time acts. They surface act_failed and let the next pass retry (pre-#64 behavior).
+for (const [label, result] of [
+  ["503 server error", { ok: false, status: 503 }],
+  ["429 rate limit", { ok: false, status: 429 }],
+  ["network throw (outcome:error)", { ok: false, outcome: "error", status: 1 }],
+  ["409 fenced (gen moved)", { ok: false, status: 409, outcome: "fenced" }],
+]) {
+  test(`routeVerdict: submitted link-pr TRANSIENT fail (${label}) → actFailed, NO escalate, NO reattach-ci (#65)`, async () => {
+    const r = await route({
+      verdict: { status: "submitted", evidence: { repo: "o/r", pr_number: 5, head: "h" } },
+      ctx: { id: "c1", role: "developer", state: "dev", gen: "1", kind: "work" },
+      overrides: { run: async (s) => (s === "link-pr.mjs" ? result : { ok: true }) },
+    });
+    assert.ok(r.actFailed, "transient link-pr failure still surfaced as act_failed");
+    assert.ok(!r.acts.some(([s]) => s === "escalate.mjs"), "transient failure must NOT park");
+    assert.ok(!r.acts.some(([s]) => s === "reattach-ci.mjs"), "reattach-ci skipped after a failed submit");
+  });
+}
+
+test("routeVerdict: submitted push (respawn) TRANSIENT fail (500) → actFailed, NO escalate (#65)", async () => {
+  const r = await route({
+    verdict: { status: "submitted", evidence: { repo: "o/r", pr_number: 5, head: "h" } },
+    ctx: { id: "c1", role: "developer", state: "dev", gen: "1", kind: "respawn" },
+    overrides: { run: async (s) => (s === "push.mjs" ? { ok: false, status: 500 } : { ok: true }) },
+  });
+  assert.ok(r.actFailed);
+  assert.equal(r.actFailed.script, "push.mjs");
+  assert.ok(!r.acts.some(([s]) => s === "escalate.mjs"));
+});
+
+test("routeVerdict: worker reject TRANSIENT fail (503) → actFailed, NO escalate; DETERMINISTIC (422) → escalate (#65)", async () => {
+  const transient = await route({
+    verdict: { status: "reject", to: "dev", reason: "x" },
+    ctx: { id: "c1", role: "tester", state: "test", gen: "1" },
+    overrides: { run: async (s) => (s === "reject.mjs" ? { ok: false, status: 503 } : { ok: true }) },
+  });
+  assert.ok(transient.actFailed, "transient reject surfaced");
+  assert.ok(!transient.acts.some(([s]) => s === "escalate.mjs"), "transient reject must NOT park");
+
+  const deterministic = await route({
+    verdict: { status: "reject", to: "dev", reason: "x" },
+    ctx: { id: "c1", role: "tester", state: "test", gen: "1" },
+    overrides: { run: async (s) => (s === "reject.mjs" ? { ok: false, status: 422 } : { ok: true }) },
+  });
+  assert.ok(deterministic.actFailed, "deterministic reject surfaced");
+  assert.ok(deterministic.acts.some(([s]) => s === "escalate.mjs"), "deterministic 422 reject parks");
 });
 
 test("routeVerdict: submitted all-ok → no escalate, no actFailed (regression)", async () => {

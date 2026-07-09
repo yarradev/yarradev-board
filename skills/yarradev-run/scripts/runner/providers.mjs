@@ -44,7 +44,15 @@ export async function attentionCards({ client }) {
   const summaries = await client.listCards();
   const rows = [];
   for (const s of summaries ?? []) {
-    const c = (await client.getEnriched(s.id)) ?? {};
+    // N+1 sweep: a single card's enrich throw must NOT abort the whole attention list (#69.2). Surface
+    // the unreadable card as its own marker so the operator sees it instead of getting nothing back.
+    let c;
+    try {
+      c = (await client.getEnriched(s.id)) ?? {};
+    } catch {
+      rows.push({ cardId: String(s.id), state: s.state ?? null, reasons: ["enrich_failed"] });
+      continue;
+    }
     const reasons = [];
     if (c.veto_held) reasons.push("veto_held");
     if (c.hold_open) reasons.push("hold_open");
@@ -58,7 +66,11 @@ export async function attentionCards({ client }) {
 export async function retryCard(cardId, { client, requestTick }) {
   const c = await client.getEnriched(cardId);
   let clearedGen = null;
-  if (c && c.current_gen != null) { clearedGen = c.current_gen; await client.clearLease(cardId, clearedGen); }
+  let cleared = null;
+  // Reflect the CLEAR_LEASE result (#69.1): a rejected clear (403/409/422 → applied:false) must NOT be
+  // reported as a successful retry. When there's no lease to clear (no current_gen) the retry is a no-op
+  // that still requests a tick — treat that as ok (cleared stays null → applied !== false is true).
+  if (c && c.current_gen != null) { clearedGen = c.current_gen; cleared = await client.clearLease(cardId, clearedGen); }
   requestTick();
-  return { ok: true, cardId: String(cardId), clearedGen };
+  return { ok: cleared?.applied !== false, outcome: cleared?.outcome ?? null, cardId: String(cardId), clearedGen };
 }

@@ -57,6 +57,14 @@ test("route maps reads to GET and controls to POST with params", () => {
   assert.deepEqual(route("retry", { card: "c1" }), { method: "POST", path: "/retry?card=c1" });
 });
 
+// #69.3: logs is unified on `card` (matching explain/retry) while still accepting the legacy `id` alias.
+test("logs accepts card (unified) and id (legacy alias), both → ?id=", () => {
+  assert.equal(TOOLS.find((t) => t.name === "logs").inputSchema.properties.card.type, "string");
+  assert.deepEqual(route("logs", { card: "c1" }), { method: "GET", path: "/logs?id=c1" });
+  assert.deepEqual(route("logs", { id: "c1" }), { method: "GET", path: "/logs?id=c1" });
+  assert.deepEqual(route("logs", { card: "cNew", id: "cOld" }), { method: "GET", path: "/logs?id=cNew" }); // card wins
+});
+
 test("makeCall fetches the mapped route and returns JSON", async () => {
   const seen = [];
   const fetchImpl = async (url, opts) => { seen.push([url, opts?.method ?? "GET"]); return { ok: true, json: async () => ({ url, method: opts?.method ?? "GET" }) }; };
