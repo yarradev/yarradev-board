@@ -74,6 +74,25 @@ test("native invoke: prints a dispatch-request, records pending, does NOT block 
   assert.match(manifest, /"status":"pending"[^\n]*"cardId":"card-9"/);
 });
 
+test("native invoke: YARRADEV_HOME (CLAUDE_PLUGIN_ROOT unset) drives agent-file resolution end-to-end", () => {
+  // Guards GH review finding on Task 4: a prior test only asserted resolveHome({YARRADEV_HOME:"/plugin"})
+  // in isolation, which would pass even if dispatch.mjs never called resolveHome() at all. This proves the
+  // wiring: set YARRADEV_HOME to a sandbox dir whose agents/developer.md differs from the real repo's
+  // (model: sonnet + body "Do the dev work." vs. the repo's agents/developer.md, which is model: opus with
+  // different body text). If dispatch.mjs ignored resolveHome() and fell back to the computed repo root
+  // (or CLAUDE_PLUGIN_ROOT, which we explicitly unset here), it would pick up the REAL agents/developer.md
+  // instead and these assertions would fail on model/body content, not just crash.
+  const { dir, promptFile } = sandbox();
+  const env = { ...process.env, YARRADEV_DISPATCH_MODE: "native", YARRADEV_STATE_DIR: dir, YARRADEV_HOME: dir };
+  delete env.CLAUDE_PLUGIN_ROOT;
+  const r = spawnSync(process.execPath, [DISPATCH, "developer", "card-home", promptFile], { encoding: "utf8", env });
+  assert.equal(r.status, 0, r.stderr);
+  const req = JSON.parse(r.stdout.trim().split("\n").pop());
+  assert.equal(req.model, "sonnet", "resolved <YARRADEV_HOME>/agents/developer.md, not the repo's (model: opus)");
+  const combined = readFileSync(req.promptPath, "utf8");
+  assert.match(combined, /Do the dev work\./, "role body came from the sandbox agents/developer.md under YARRADEV_HOME");
+});
+
 test("native invoke: board.json roles override model/worktree/subagentType in the emitted request", () => {
   const { dir, promptFile } = sandbox();
   // agents/developer.md ships model:sonnet, developer is a WORKTREE_ROLES member (worktree default true).
