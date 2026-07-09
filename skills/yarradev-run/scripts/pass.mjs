@@ -221,20 +221,6 @@ export function decideDispatch({ recResults, prevBreaker, inFlightCount, K, maxC
   return { effectiveK, breaker, saw529 };
 }
 
-/**
- * Advance the pass-count context-clear valve. Pure. `content` is the raw PASS_COUNT file text (coerced to 0
- * when missing/blank/garbage). Returns the next count and whether it has reached `threshold` (the point at
- * which the caller writes prep-clear). Runs on EVERY non-prep-clear pass — including breaker-open/at-capacity
- * skips (GH #49) — so a prolonged gateway outage still trips the valve rather than counting only dispatch passes.
- * @param {string|number|undefined} content raw PASS_COUNT file content
- * @param {number} [threshold=40]
- * @returns {{next:number, reachedThreshold:boolean}}
- */
-export function advancePassCount(content, threshold = 40) {
-  const next = (Number(content) || 0) + 1;
-  return { next, reachedThreshold: next >= threshold };
-}
-
 /** Detect a board "bounce budget exhausted" 422 on a REJECT (thrash cap → escalate, don't re-loop). */
 function isBounceBudget(r) {
   if (r?.outcome !== "gate_blocked") return false;
@@ -961,14 +947,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const breakerCooldownS = cfg.pace?.breakerCooldownS ?? 600;
   const inflightStaleS = Number(cfg.runtime?.inflightStaleS ?? 7200);
 
-  // Context management (epic-context-clearing): if the prep-clear flag is set (by the yarradev-loop wrapper
-  // on CTX%≥60%, or by the pass-count fallback below), reconcile in-flight verdicts but do NOT claim/dispatch
-  // new cards — then exit so the wrapper restarts the session with clean context.
-  const PREP_CLEAR = "/tmp/yarradev-prep-clear";
-  const PASS_COUNT = "/tmp/yarradev-epic-pass-count";
-  const skipDispatch = existsSync(PREP_CLEAR);
-  if (skipDispatch) process.stderr.write("[pass] prep-clear set — reconciling in-flight only, no new dispatch\n");
-
   // Lazy-import makeClient (avoid pulling BoardClient at module top so pure-helper imports stay clean of fs).
   const { makeClient } = await import("./plugin-io.mjs");
   const client = makeClient({ role: "orchestrator" });
@@ -1108,9 +1086,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     return cursor?.priority ?? 100;
   };
 
-  if (skipDispatch) {
-    process.stdout.write(JSON.stringify({ phase: "dispatch", action: "skipped", reason: "prep-clear" }) + "\n");
-  } else if (effectiveK <= 0) {
+  if (effectiveK <= 0) {
     const reason = breaker.state === "OPEN" ? "breaker-open" : "at-capacity";
     process.stdout.write(
       JSON.stringify({ phase: "dispatch", action: "skipped", reason, inFlightCount, breakerState: breaker.state }) + "\n",
@@ -1130,22 +1106,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       },
     });
     process.stdout.write(JSON.stringify({ phase: "dispatch", ...dispatchOut }) + "\n");
-  }
-
-  // Pass-count fallback (when statusline CTX% isn't available): ~3.3h at 5-min intervals → prep-clear, so the
-  // next pass reconciles-only and the wrapper restarts with clean context. Runs on every non-prep-clear pass —
-  // including breaker-open/at-capacity skips (GH #49), so a prolonged gateway outage still trips the valve.
-  if (!skipDispatch) {
-    try {
-      const { next, reachedThreshold } = advancePassCount(readFileSync(PASS_COUNT, "utf8"));
-      writeFileSync(PASS_COUNT, String(next));
-      if (reachedThreshold && !existsSync(PREP_CLEAR)) {
-        writeFileSync(PREP_CLEAR, "");
-        process.stderr.write("[pass] pass-count reached 40 → wrote prep-clear (next pass reconciles-only + exits)\n");
-      }
-    } catch (e) {
-      process.stderr.write(`[pass] pass-count update failed: ${e?.message ?? e}\n`);
-    }
   }
 
   process.exit(0);
