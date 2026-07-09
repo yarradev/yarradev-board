@@ -37,6 +37,8 @@ import {
   mkdirSync,
   existsSync,
   statSync,
+  createWriteStream,
+  createReadStream,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
@@ -366,13 +368,50 @@ export function resolveAgentFile(role) {
 // ============================================================================
 
 /**
+ * Spawn `claudeBin args` and stream its combined stdout+stderr to `verdictPath` as chunks arrive (so
+ * `tail -f`/the browser see live progress, instead of the old spawnSync-then-write-once behavior). The
+ * write stream opens with `flags: "w"` — it TRUNCATES `verdictPath` once at the start of the call (the
+ * caller decides per-attempt whether that's desired; see runRunner's invokeClaude below).
+ *
+ * `promptPath`, when given AND the child actually exposes a `stdin` stream, is piped into the child's
+ * stdin (the real invocation: `spawn`'s default stdio gives a writable `child.stdin`). The injected fake
+ * `spawn` used in tests emits no `stdin` property, so piping is skipped there — no crash, no behavior to
+ * verify beyond "streamClaude doesn't blow up when stdin is absent".
+ *
+ * @param {{
+ *   claudeBin: string,
+ *   args: string[],
+ *   promptPath?: string,
+ *   verdictPath: string,
+ *   spawn?: typeof import("node:child_process").spawn,
+ * }} o
+ * @returns {Promise<{rc: number}>}
+ */
+export function streamClaude({ claudeBin, args, promptPath, verdictPath, spawn: sp = spawn }) {
+  return new Promise((resolve, reject) => {
+    const out = createWriteStream(verdictPath, { flags: "w" });
+    const child = sp(claudeBin, args, { stdio: ["pipe", "pipe", "pipe"] });
+    if (promptPath && child.stdin) createReadStream(promptPath).pipe(child.stdin);
+    child.stdout.on("data", (d) => out.write(d));
+    child.stderr.on("data", (d) => out.write(d));
+    child.on("error", (e) => {
+      out.end();
+      reject(e);
+    });
+    child.on("close", (code) => {
+      out.end(() => resolve({ rc: code ?? 1 }));
+    });
+  });
+}
+
+/**
  * Run the claude -p retry loop (the heart of run.sh). Pure over the injected `invokeClaude` + verdict
  * file: each attempt writes stdout+stderr to the verdict file, then the attempt marker; on a 529 it
  * sleeps (backoff) and truncates between attempts. Breaks immediately on success (rc 0) or a non-529
  * failure. Returns the final {rc, attempts}.
  *
  * @param {{
- *   invokeClaude: (attempt:number) => {rc:number, out:string},  // runs claude -p once; returns exit + stdout/stderr
+ *   invokeClaude: (attempt:number) => {rc:number, out:string} | Promise<{rc:number, out:string}>,  // runs claude -p once (sync or async); returns exit + stdout/stderr
  *   verdictPath: string,
  *   maxAttempts?: number,
  *   backoffScheduleMs?: number[],
@@ -397,7 +436,7 @@ export async function runRetryLoop({
   let attempts = 0;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     attempts = attempt;
-    const r = invokeClaude(attempt);
+    const r = await invokeClaude(attempt);
     rc = typeof r.rc === "number" ? r.rc : 1;
     const out = r.out ?? "";
     // claude stdout+stderr → verdict (overwrite, mirrors `> verdict 2>&1`), then the attempt marker.
@@ -667,7 +706,6 @@ async function runRunner({ role, cardId, promptFile, flags }) {
     manifestPath,
   } = flags;
 
-  const promptContent = readFileSync(promptFile, "utf8");
   const claudeBin = resolveClaudeBin();
 
   // Build the claude argv (mirror run.sh). worktreeFlag is "" or "--worktree yarradev-<cardId>".
@@ -685,15 +723,22 @@ async function runRunner({ role, cardId, promptFile, flags }) {
     origPwd,
   ];
 
-  // invokeClaude: one claude -p run, stdin=combined prompt, stdout+stderr captured.
-  const invokeClaude = () => {
-    const r = spawnSync(claudeBin, claudeArgs, {
-      input: promptContent,
-      encoding: "utf8",
-      env: process.env,
+  // invokeClaude: one claude -p run, stdin=combined prompt (piped from promptFile), stdout+stderr
+  // STREAMED to verdictPath as they arrive (live logs — GH stream task). streamClaude's write stream
+  // opens `flags: "w"`, so each attempt gets a fresh verdict file, matching the old spawnSync behavior
+  // where runRetryLoop's own `wf(verdictPath, out)` (below, unchanged) overwrote per attempt. We still
+  // read the streamed content back so runRetryLoop's 529-retry-gate/attempt-marker/truncate logic (which
+  // operates on `out`) is untouched — that re-write of already-on-disk content is a harmless no-op for
+  // the file's final bytes; the *live* benefit already happened while streamClaude's promise was pending.
+  const invokeClaude = async () => {
+    const { rc } = await streamClaude({
+      claudeBin,
+      args: claudeArgs,
+      promptPath: promptFile,
+      verdictPath,
     });
-    const out = (r.stdout ?? "") + (r.stderr ?? "");
-    return { rc: typeof r.status === "number" ? r.status : 1, out };
+    const out = readFileSync(verdictPath, "utf8");
+    return { rc, out };
   };
 
   const { rc } = await runRetryLoop({
