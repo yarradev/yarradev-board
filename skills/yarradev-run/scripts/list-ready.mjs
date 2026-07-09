@@ -22,9 +22,8 @@
 import { decide, assertLifecycleCoherent } from "./vendor/core.mjs";
 import { makeClient, loadConfig } from "./plugin-io.mjs";
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { inFlightCardIds } from "./in-flight.mjs";
+import { manifestPath as resolveManifestPath } from "./runner/paths.mjs";
 
 /**
  * Resolve the priority of the root epic for a card. If the card IS an epic, its own
@@ -120,8 +119,11 @@ const sorted = [...enriched.values()].sort((a, b) => {
 // Skip cards whose latest dispatch is pending with no matching done and is recent; re-dispatchable once
 // the subagent finishes (done) or the entry goes stale (presumed dead).
 const staleS = Number(cfg.runtime?.inflightStaleS ?? 7200);
-const manifestStateDir = process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share", "claude-bg");
-const manifestPath = join(manifestStateDir, "dispatch-manifest.jsonl");
+// Resolved through runner/paths.mjs — the SAME manifest path dispatch.mjs and pass.mjs use (the
+// single source of truth). Previously this derived an independent (and now stale) path scheme,
+// which meant the in-flight guard below always read an empty/missing file and never skipped a
+// card whose subagent was still running — a double-dispatch / worktree-corruption risk.
+const manifestPath = resolveManifestPath();
 let inFlight = new Set();
 try {
   if (existsSync(manifestPath)) inFlight = inFlightCardIds(readFileSync(manifestPath, "utf8"), now, staleS);
