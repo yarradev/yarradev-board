@@ -3,11 +3,26 @@
 A Claude Code plugin: a **reconciliation-loop orchestrator** that drives a **yarradev HTTP board**
 (the Cloudflare Durable Object board in `yarradev-platform`) and dispatches **role subagents**
 (designer → developer → tester, plus a **security-advisor**, a **releaser** staging deploy, and a
-**human production gate**) via the **Agent tool** — running on **your own Claude subscription**.
+**human production gate**) via `claude -p` — running on **your own Claude subscription**.
 
-You install the plugin, point it at your board, and run `/loop … /yarradev:yarradev-run`.
-Each pass it claims a ready card, dispatches the stage's role subagent to do the real work, and posts
-the resulting transition back to the board.
+**Supported driver — the headless `yarradev run` daemon.** Install the plugin, point it at your
+board, and run:
+
+```
+kdbx run -- yarradev run
+```
+
+(or `YDB_TOKEN=… yarradev run` if you're not using kdbx). This starts a long-lived Node process —
+a timer + manifest-watch loop that runs one isolated `pass.mjs` reconcile/dispatch tick at a time and
+dispatches role subagents as **detached** background processes. The runner itself makes **zero model
+calls** — it only claims cards, posts acts, and shells out to `claude -p`, which draws on your own
+Claude auth exactly as before. See **"Headless runner (supported)"** below.
+
+> **Legacy: in-session `/loop /yarradev:yarradev-run`.** The previous way of running this — inside an
+> interactive Claude Code session via `/loop … /yarradev:yarradev-run`, using this skill's conductor
+> persona directly — still works as a manual/interactive fallback, but is no longer the supported
+> driver. The machine-local `yarradev-loop` bash wrapper (the thing that used to watch
+> `/tmp/yarradev-epic-done` and restart the session) is **retired**. See "Run (legacy)" below.
 
 > ⚠️ The HTTP board backend (the `yarradev-platform` Cloudflare service) is a **separate, not-yet-public**
 > service. This plugin is the open client; until you have a board endpoint to point it at, only the
@@ -15,16 +30,19 @@ the resulting transition back to the board.
 
 ## How it consumes your subscription (and stays ToS-clean)
 
-The orchestrator skill is the **session model**; role workers are Agent-tool **subagents in the same
-Claude Code session**. So all LLM work draws from **your Claude Pro/Max subscription** — not API
-credits. The board (a separate SaaS) **never receives your Claude credential and makes no model
-calls**; it only stores the work log and enforces the state machine. This plugin does **not** use
-`claude -p` or the Claude Agent SDK.
+Under the headless runner, role workers are dispatched as detached `claude -p` processes (under the
+in-session legacy mode, they're Agent-tool subagents in the same Claude Code session instead). Either
+way, all LLM work draws from **your Claude Pro/Max subscription** — not API credits, and never through
+the runner's own credential (it holds none). The board (a separate SaaS) **never receives your Claude
+credential and makes no model calls**; it only stores the work log and enforces the state machine. The
+runner process itself is a plain Node daemon — it never calls a model directly.
 
-> `YDB_TOKEN` is your **board** bearer — **not** a Claude credential. Don't `export` it into your
-> shell profile and don't commit it: the orchestrator inlines it per board call so role subagents
-> (which have Bash and share the machine) never see it. Running the automated tests is the exception —
-> there are no subagents there, so inlining it on the `npm test` line is fine.
+> `YDB_TOKEN` (or the per-role `YDB_TOKEN_<ROLE>` set) is your **board** bearer — **not** a Claude
+> credential. Don't `export` it into your shell profile and don't commit it. Run the headless daemon via
+> `kdbx run -- yarradev run` so the vault injects it into that one process only; under the legacy
+> in-session mode, inline it per board call instead — role subagents share the machine and would be able
+> to read an exported token. Running the automated tests is the exception — there are no subagents
+> there, so inlining it on the `npm test` line is fine.
 
 ## Install
 
@@ -53,19 +71,78 @@ Or load locally during development by enabling the plugin from this checkout.
 Defaults: `apiBase http://localhost:8802`, `doName acme:flow`, pace `{ maxCardsPerPass:1, claimTtlS:1800,
 minLoopIntervalS:300 }`, budgets `{ transition_budget:50, bounce_limit:3, respawn_window_ms:60000 }`,
 `deploy.staging` (your staging-deploy command; empty by default → the releaser escalates to configure it).
+The **headless runner** also reads a `runner` block: `{ port:4599, passTimeout:120, debounceMs:750 }` —
+see "Headless runner (supported)" below for what each field does.
 
 > The plugin lifecycle's `gate` tags (`mechanical`/`human`) are **routing hints for `decide()` only**.
 > The board's real enforcement is the compiled `GateExpr` on each transition edge, and the two must
 > agree (see the demo's board-machine step). If a board edge omits the gate, the act commits with no
 > enforcement; if the edge is missing, the MOVE 422s with no `blocked_by`.
 
-## Run
+## Headless runner (supported)
+
+```
+kdbx run -- yarradev run
+```
+
+This is the daemon: a timer (`pace.minLoopIntervalS`, default 5m) plus a manifest-watch (fires early,
+debounced by `runner.debounceMs`, when a dispatched subagent's verdict lands) that trigger one
+`pass.mjs` reconcile/dispatch tick at a time — never overlapping (a tick requested while one is running
+just re-runs once the current one finishes). Each tick is a short-lived, isolated Node subprocess: it
+reconciles any landed verdicts (posts the resulting acts), then dispatches up to `pace.maxCardsPerPass`
+new role subagents as **detached background processes**, then exits. There is no accumulated
+context/session state to manage between ticks — unlike the old in-session `/loop`, there is nothing to
+periodically clear.
+
+- **Detached agents survive a runner restart.** A dispatched `claude -p` subagent is spawned detached
+  (unref'd / backgrounded), independent of the daemon process. If you stop and restart `yarradev run`
+  while a subagent is still working, it keeps running; the next tick's reconcile picks up its verdict
+  from the shared dispatch manifest exactly as if the daemon had stayed up.
+- **Control plane.** The daemon listens on `http://127.0.0.1:<runner.port>` (default `4599`),
+  **localhost-only** — it binds to `127.0.0.1`, not `0.0.0.0`, so it isn't reachable off the machine.
+  There is no additional auth on top of that binding; don't run it on a shared/multi-tenant host without
+  additional isolation. `GET /` serves a minimal browser monitor
+  (`http://127.0.0.1:<port>/`) that polls `/status` every few seconds.
+- **CLI client subcommands** (read `runner.port` from `board.json`, same as the daemon):
+  ```
+  yarradev status  # paused? pass running? last tick ok? breaker state?
+  yarradev pause   # stop claiming new cards (in-flight work finishes)
+  yarradev resume  # resume claiming
+  yarradev tick    # request an immediate reconcile/dispatch pass
+  yarradev logs    # placeholder — not yet wired to a specific verdict file
+  yarradev stop    # stop the manifest-watch/timer and close the control plane
+  ```
+  There's also a `retry` action (`POST /retry`) that requests an immediate tick — it does **not** yet
+  perform a full lease-clear on the target card; treat it as "nudge the loop," not "force-unstick this
+  card," until that lands.
+- **Logs.** The runner never writes inside the plugin/repo checkout. Everything — the dispatch manifest
+  and each dispatched subagent's live-streamed verdict/output — lives under the platform data dir:
+  `$XDG_DATA_HOME/yarradev` (`~/.local/share/yarradev` by default on macOS/Linux; override with
+  `YARRADEV_STATE_DIR`). Verdict output streams to
+  `<data dir>/dispatch/<role>-<cardId>-<random>/verdict.txt` as the subagent produces it (so `tail -f`
+  works while a subagent is still running); the manifest tracking pending/done dispatches is
+  `<data dir>/dispatch-manifest.jsonl`.
+- **Auth.** The runner makes **zero model calls itself** — it only talks to the board (via `YDB_TOKEN`/
+  `YDB_TOKEN_<ROLE>`) and shells out to `claude -p` for role work, which uses your own Claude Code auth.
+  Run it via `kdbx run -- yarradev run` so your board token(s) are injected into that one process without
+  ever being exported to your shell or written to disk.
+
+## Run (legacy: in-session `/loop`)
+
+The previous way of driving the same reconcile/dispatch logic — from inside an interactive Claude Code
+session, using this skill's conductor persona directly instead of the headless daemon:
 
 ```
 /model sonnet      # the orchestrator's own LLM work is just routing — keep it cheap
 /effort low
 /loop 5m /yarradev:yarradev-run
 ```
+
+This still works (see `skills/yarradev-run/SKILL.md` for the full per-pass procedure it follows — the
+same routing `pass.mjs` implements), but it is no longer the supported driver: it ties up an interactive
+session for the duration of the loop, and the machine-local `yarradev-loop` bash wrapper that used to
+watch for epic completion and restart the session is **retired**. Prefer the headless runner above for
+anything long-running or unattended.
 
 ## Local end-to-end demo (against the platform stack)
 
@@ -97,9 +174,11 @@ advisor VETO, the releaser staging deploy, and human GO). Boot the **board** (:8
    --command "INSERT OR IGNORE INTO repo_board ..."`.
 4. **Seed a card:**
    `POST /boards/acme:flow/acts {"type":"CREATE","item_id":"card-1","data":{"state":"spec","title":"<intent>"}}`.
-5. **Run the loop:** give the orchestrator `orch1.s3cret` in your launch message (it inlines it per call;
-   don't `export` it), set `/model sonnet` + `/effort low`, then `/loop 30s
-   /yarradev:yarradev-run`, and watch each gate:
+5. **Run it:** `YDB_TOKEN=orch1.s3cret yarradev run` (or `kdbx run -- yarradev run` if you've vaulted it) —
+   watch `http://127.0.0.1:4599/` or `yarradev status` while it ticks. (The legacy in-session path still
+   works too: give the orchestrator `orch1.s3cret` in your launch message — it inlines it per call, don't
+   `export` it — set `/model sonnet` + `/effort low`, then `/loop 30s /yarradev:yarradev-run`.) Either way,
+   watch each gate:
    - **spec→dev** — designer writes the spec → MOVE.
    - **dev** (mechanical + advisor) — developer (own worktree, real commit, pushes a branch) returns
      `submitted{repo,pr_number,head}` → orchestrator `LINK_PR`s; the security-advisor reviews the diff
@@ -128,8 +207,9 @@ YDB_IT=1 YDB_TOKEN=orch1.s3cret YDB_DO_NAME=acme:flow YDB_WHSECRET=local-whsec n
 
 The second form also runs the live HTTP-rail tests against the seeded board (LINK_PR → MOVE 422
 `ci_green` → signed `check_run` → advance). The live **LLM dispatch** (subagents doing real work) is
-exercised only by the demo runbook above — it consumes your subscription in-session and can't be
-unit-tested. Automated tests cover the deterministic rail (scripts + gen-fence/gate contract) only.
+exercised only by the demo runbook above — it consumes your subscription and can't be unit-tested.
+Automated tests cover the deterministic rail (scripts + gen-fence/gate contract + the runner's daemon,
+control plane, and CLI plumbing) only.
 
 ## Bugs & feedback
 
@@ -176,6 +256,14 @@ to a subagent.
 **Validated:** `#69` — the developer subagent now creates real GitHub PRs via `gh pr create`
 (with a repo path parameter) instead of returning synthetic evidence. This card validates the
 full end-to-end PR creation lifecycle.
+
+**Also shipped:** the **headless `yarradev run` runner** — a timer + manifest-watch daemon that drives
+`pass.mjs` without an interactive Claude Code session, dispatching role subagents as detached `claude -p`
+processes (survives runner restart, reconciles on the next tick) and exposing a localhost-only HTTP
+control plane (`status`/`pause`/`resume`/`tick`/`stop` + a minimal browser monitor). This is now the
+supported driver; the in-session `/loop /yarradev:yarradev-run` procedure is legacy and the old
+machine-local `yarradev-loop` bash wrapper is retired. Not yet shipped in the runner: an MCP-based
+control surface and an in-plugin operator UI (planned as separate follow-on work).
 
 **Next:** richer cross-stage context persistence (designer's plan → developer), `RENEW` for long jobs,
 multi-card concurrency, the analyst/epic tier, and a GitHub App + dashboard for the hosted board.

@@ -1,9 +1,27 @@
 ---
 name: yarradev-run
-description: The yarradev board orchestrator — a reconciliation loop that drives every ready card through the lifecycle (spec→dev→test→done→staging→prod, with mechanical CI, a security-advisor, a releaser staging deploy, and a human-GO production gate) by reading a yarradev HTTP board, claiming a lease, dispatching the stage's role subagent in a tmux pane via `claude -p`, parsing its verdict, and posting the resulting act. Run continuously via /loop.
+description: The yarradev board orchestrator — a reconciliation loop that drives every ready card through the lifecycle (spec→dev→test→done→staging→prod, with mechanical CI, a security-advisor, a releaser staging deploy, and a human-GO production gate) by reading a yarradev HTTP board, claiming a lease, dispatching the stage's role subagent via `claude -p`, parsing its verdict, and posting the resulting act. The supported way to run this is the headless `yarradev run` daemon (`kdbx run -- yarradev run`); the in-session `/loop /yarradev:yarradev-run` procedure documented below is retained as a legacy manual/interactive driver of the same logic.
 ---
 
 # yarradev-run — the orchestrator
+
+**Supported driver: the headless `yarradev run` daemon.** `yarradev run` (start via `kdbx run --
+yarradev run`, or `YDB_TOKEN=… yarradev run`) is a long-lived Node process that ticks `pass.mjs` — the
+deterministic reconcile/dispatch implementation of everything this skill describes — on a timer plus a
+manifest-watch, dispatching role subagents as detached `claude -p` processes. It exposes a
+localhost-only HTTP control plane (`http://127.0.0.1:<runner.port>`, default `4599`; `yarradev status |
+pause | resume | tick | logs | stop`, plus a minimal browser monitor at `http://127.0.0.1:<port>/`).
+Detached agents survive a runner restart — they reconcile on the next tick regardless of whether the
+daemon that dispatched them is still the one running. Logs (the dispatch manifest + each subagent's
+live-streamed verdict output) live under the platform data dir (`$XDG_DATA_HOME/yarradev`, override with
+`YARRADEV_STATE_DIR`), never inside this repo. The runner makes **zero model calls** itself — see the
+plugin `README.md`'s "Headless runner (supported)" section for the full reference.
+
+**Legacy: the in-session `/loop /yarradev:yarradev-run` procedure below.** This remains available as a
+manual/interactive fallback (e.g. for debugging a single pass step-by-step inside a live session) and as
+the **parity reference** `pass.mjs` implements, but it is no longer the supported way to run the
+orchestrator continuously — prefer the headless daemon above. The machine-local `yarradev-loop` bash
+wrapper that used to watch this session's exit and auto-restart it is **retired**.
 
 You are the **conductor** of a yarradev board. You **route; you do not do role work**. Each pass you
 reconcile the board (desired state) toward reality by dispatching role subagents, then yield. You hold
@@ -27,6 +45,11 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
 
 ## Config & auth
 - Scripts: `${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts/` (call as `node <that>/<name>.mjs`).
+- **Headless runner config.** `board.json` also carries a `runner` block read only by `yarradev run`:
+  `{ port:4599, passTimeout:120, debounceMs:750 }` — `port` is the localhost-only control-plane port,
+  `passTimeout` (seconds) bounds a single `pass.mjs` tick before it's killed, `debounceMs` coalesces
+  rapid manifest-file changes (a burst of subagent completions) into one extra tick instead of one per
+  change. See `skills/yarradev-run/config/board.example.json`.
 - Board config (apiBase, doName, lifecycle, pace, budgets, deploy, runtime): **`.yarradev/board.json` in the
   project root** — committed, per-project (one per board, so multi-project setups each carry their own). A
   partial file merges over the shipped `board.example.json` template (set just `apiBase`/`doName`/`pace` and
@@ -82,26 +105,35 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
   `human-go`/`clear-veto` → human.
   Inline the whole set at loop start, e.g. `YDB_TOKEN_ORCHESTRATOR=… YDB_TOKEN_DEVELOPER=… … node $S/…`
   (or just `YDB_TOKEN=…` for a single-identity setup — everything falls back to it).
-- **Epic-boundary context clearing.** When an epic reaches `epic_done`, the conductor writes
-  `/tmp/yarradev-epic-done` (JSON: epic id, title, completedAt, storyCount) and calls `/exit`.
-  An optional external wrapper (`~/work/tools/yarradev-loop`) watches this file and restarts
-  the session with clean context. Without the wrapper, the conductor exits cleanly — restart
-  manually. A context-pressure flag (`/tmp/yarradev-prep-clear`) triggers the same exit
-  sequence mid-epic when the context window is filling up.
+- **Epic-boundary signal (legacy in-session use only).** When an epic reaches `epic_done`,
+  `pass.mjs` still writes `/tmp/yarradev-epic-done` (JSON: epic id, title, completedAt, storyCount) —
+  the in-session conductor calls `/exit` after posting it. The machine-local wrapper that used to watch
+  this file and restart the session (`~/work/tools/yarradev-loop`) is **retired**, so under the
+  legacy in-session `/loop` procedure the conductor now just exits cleanly and you restart manually.
+  Under the **headless runner**, this signal is inert (nothing consumes it) and harmless — the runner
+  has no accumulated session context to clear in the first place, since each `pass.mjs` tick is a fresh,
+  short-lived subprocess. There is **no context-pressure valve** (no `/tmp/yarradev-prep-clear`, no
+  pass counter) — that mechanism existed only for the old long-running interactive session and has been
+  removed; `pass.mjs` is a pure reconcile → dispatch → exit per tick, nothing more.
 
-## Per-pass procedure (one /loop invocation)
+## Per-pass procedure (one /loop invocation — legacy in-session driver; `pass.mjs` is the parity reference)
 Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
 
-> **PRIMARY (v0.9.1 cutover) — run `node $S/pass.mjs` each pass.** `pass.mjs` is now the default conductor:
-> it **reconciles** landed verdicts (re-CLAIM at verdict time, so a long subagent's verdict isn't stranded by
+> **PRIMARY — run `node $S/pass.mjs` each pass.** `pass.mjs` is the default conductor, and is what the
+> **headless `yarradev run` daemon ticks on your behalf** (you never invoke it by hand there). It
+> **reconciles** landed verdicts (re-CLAIM at verdict time, so a long subagent's verdict isn't stranded by
 > lease-TTL gen-bumps — fixes #27's recovery gap), **fans out** up to `effectiveK` concurrent dispatches —
 > `min(pace.maxCardsPerPass, pace.maxConcurrent − in-flight)`, dropped to 0/1 by the 529 circuit breaker
-> (#28), routes every verdict with full parity, and handles the prep-clear check (step 0) + the 40-pass
-> counter (step 3) + the `epic_done` signal. **Fallback:** if `pass.mjs` is unavailable or hits an unexpected
-> error, the step-by-step loop below (steps 0–4) remains the manual procedure. The detailed steps below are
-> now the **parity reference** `pass.mjs` implements — audit them, don't execute them when `pass.mjs` runs.
-> Spec: `docs/superpowers/specs/2026-07-07-pass-mjs-async-reconcile-design.md`. **Known V1 gap:** autonomous
-> `release.mjs` on `done→staging` is not yet ported — staging→prod stays human-gated (the safe default).
+> (#28), routes every verdict with full parity, and writes the `epic_done` signal. It is a **pure
+> reconcile → dispatch → exit per invocation** — there is no context-pressure check and no pass counter;
+> those existed only in the old long-running in-session conductor and have been removed (see
+> "Epic-boundary signal" above). **Fallback:** if `pass.mjs` is unavailable or hits an unexpected error
+> in the **legacy in-session `/loop`** procedure, the step-by-step loop below (steps 1–3) remains the
+> manual fallback. The detailed steps below are
+> otherwise the **parity reference** `pass.mjs` implements — audit them, don't execute them when
+> `pass.mjs` runs. Spec: `docs/superpowers/specs/2026-07-07-pass-mjs-async-reconcile-design.md`.
+> **Known V1 gap:** autonomous `release.mjs` on `done→staging` is not yet ported — staging→prod stays
+> human-gated (the safe default).
 
 ### Native dispatch mode (interactive Claude Code — `runtime.dispatchMode: "native"`)
 
@@ -135,11 +167,6 @@ interactive Claude Code session, `pass.mjs` does **not** spawn `claude -p`. Inst
 
 If you are **not** in an interactive session with an `Agent` tool (headless/cron), set
 `dispatchMode: "external"` (the default) — `pass.mjs` spawns `claude -p` and this protocol does not apply.
-
-0. **Check context-pressure flag.** If `/tmp/yarradev-prep-clear` exists, do NOT claim a new
-   card this pass. If a card is currently in-flight (leased), finish it normally — post its act
-   and CLEAR_LEASE. Then call `/exit`. If no card is in-flight, exit immediately. The wrapper
-   detects clean exit without an epic-done signal and restarts after a short delay.
 
 1. **List ready cards:** `node $S/list-ready.mjs` → one JSON line per actionable card:
    `{ "kind":"work"|"advance"|"respawn"|"reclaim"|"promote"|"escalate", "id", "state", "role"?, "to"?, "reason"?, "title" }`.
@@ -468,16 +495,13 @@ If you are **not** in an interactive session with an `Agent` tool (headless/cron
         `"error"` / **no parseable block** → post nothing; log; retry next pass.
    4. **CLEAR_LEASE — always:** `node $S/clear-lease.mjs <id> <gen>` in **every** branch.
    5. Log a one-line outcome.
-3. **Yield.** Also increment the epic pass counter:
-   ```
-   COUNT=$(cat /tmp/yarradev-epic-pass-count 2>/dev/null || echo 0)
-   echo $((COUNT + 1)) > /tmp/yarradev-epic-pass-count
-   ```
-   If `$COUNT` reaches 40 (≈3.3h at 5-min intervals), the same pass writes
-   `/tmp/yarradev-prep-clear` itself (the next pass's step 0 catches it).
-   This is the safety valve when no statusline CTX% integration is available.
-   Re-run via `/loop <interval> /yarradev:yarradev-run` (interval ≥
-   `pace.minLoopIntervalS`, default 5m; keep it under your prompt-cache TTL for cache hits).
+3. **Yield.** There is no pass counter and no context-clearing valve to maintain — this legacy
+   in-session procedure just ends the pass; re-run via `/loop <interval> /yarradev:yarradev-run`
+   (interval ≥ `pace.minLoopIntervalS`, default 5m; keep it under your prompt-cache TTL for cache hits).
+   If you're running many passes in one long-lived interactive session and feel context pressure
+   building, that's a signal to switch to the **headless `yarradev run` daemon** instead (`kdbx run --
+   yarradev run`) — each of its ticks is a fresh, short-lived `pass.mjs` subprocess with nothing to
+   accumulate, so this concern doesn't apply there at all.
 
 ## Discipline & safety
 - **Bounded fan-out.** A card advances at most one stage per pass; the next pass re-reconciles. Each pass
@@ -515,12 +539,18 @@ If you are **not** in an interactive session with an `Agent` tool (headless/cron
 | CLEAR_LEASE | any | best-effort; the lease expires at its TTL anyway |
 
 ## Verify
-Seed one card in `spec`; give the orchestrator the board token **in your launch message** — it inlines
-it per call. Do **NOT** `export` it: `/loop` dispatches role subagents in this same shell, so an exported
-token is inherited by every subagent (readable via `printenv`) and a prompt-injected one could forge acts
-under your identity. Then run `/loop 30s /yarradev:yarradev-run`. Watch it move spec→dev
+
+**Headless (supported):** seed one card in `spec`, then `kdbx run -- yarradev run` (or
+`YDB_TOKEN=<token> yarradev run` for a single-identity setup — never `export` it into your shell
+profile). Watch `yarradev status` / `http://127.0.0.1:<port>/` as it ticks. It should move spec→dev
 (designer) → dev→test (developer, gated on CI + security-advisor) → test→done (tester, gated on e2e +
 code-reviewer — a `reject` bounces test→dev, `advice`/`clean` clears the gate) → done→staging (releaser
 runs `deploy.staging`) → and park at `staging` awaiting a human GO; a `byKind:human` identity runs
-`node $S/human-go.mjs <id>` and the next pass promotes staging→prod. Confirm `node $S/list-ready.mjs` goes
-quiet and the card reads `state: prod`.
+`node $S/human-go.mjs <id>` and the next tick promotes staging→prod. Confirm `node $S/list-ready.mjs`
+goes quiet and the card reads `state: prod`, then `yarradev stop`.
+
+**Legacy in-session:** the same walk, driven by `/loop` instead of the daemon. Seed one card in `spec`;
+give the orchestrator the board token **in your launch message** — it inlines it per call. Do **NOT**
+`export` it: `/loop` dispatches role subagents in this same shell, so an exported token is inherited by
+every subagent (readable via `printenv`) and a prompt-injected one could forge acts under your identity.
+Then run `/loop 30s /yarradev:yarradev-run` and watch the same gate sequence as above.
