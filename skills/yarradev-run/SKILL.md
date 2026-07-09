@@ -29,7 +29,7 @@ executes them; cost reporting isn't available yet). See the plugin `README.md`'s
 - `yarradev board` — print the live status board once (cards in-flight + recently resolved/escalated). Local state only; no board API calls.
 - `yarradev watch [--interval <ms>]` — the same board, redrawn live (default 1s). Local state only; no board API calls.
 
-Both are available via the `yarradev-runner` MCP's `board` tool as well.
+The `yarradev-runner` MCP's `board` tool returns the same underlying data as a one-shot JSON snapshot; the live redraw (`watch`) is CLI-only.
 
 **Legacy: the in-session `/loop /yarradev:yarradev-run` procedure below.** This remains available as a
 manual/interactive fallback (e.g. for debugging a single pass step-by-step inside a live session) and as
