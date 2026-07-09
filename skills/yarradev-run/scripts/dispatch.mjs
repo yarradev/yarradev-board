@@ -390,8 +390,20 @@ export function resolveAgentFile(role) {
 export function streamClaude({ claudeBin, args, promptPath, verdictPath, spawn: sp = spawn }) {
   return new Promise((resolve, reject) => {
     const out = createWriteStream(verdictPath, { flags: "w" });
+    out.on("error", (e) => reject(e));
     const child = sp(claudeBin, args, { stdio: ["pipe", "pipe", "pipe"] });
-    if (promptPath && child.stdin) createReadStream(promptPath).pipe(child.stdin);
+    if (promptPath && child.stdin) {
+      child.stdin.on("error", (e) => {
+        out.end();
+        reject(e);
+      });
+      createReadStream(promptPath)
+        .on("error", (e) => {
+          out.end();
+          reject(e);
+        })
+        .pipe(child.stdin);
+    }
     child.stdout.on("data", (d) => out.write(d));
     child.stderr.on("data", (d) => out.write(d));
     child.on("error", (e) => {
