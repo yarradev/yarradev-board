@@ -221,6 +221,33 @@ export function decideDispatch({ recResults, prevBreaker, inFlightCount, K, maxC
   return { effectiveK, breaker, saw529 };
 }
 
+/**
+ * Classify a failed act result as TRANSIENT (the board was degraded — retry next pass) vs DETERMINISTIC
+ * (the act itself is invalid — park for a human). The over-parking fix (#65): link-pr/push fire on every
+ * dev submission, so a transient board blip must NOT park the card for a human ANSWER; it should just fail
+ * the act and let the next pass re-derive + retry (the pre-#64 behavior).
+ *
+ * The board client (vendor/core.mjs) preserves the real HTTP `status` on the result and maps 403→unauthorized
+ * / 409→fenced / 422→bad_act; any other status keeps its `status` but falls through to `bad_act`. A network
+ * throw surfaces via makeRun as `{outcome:"error"}` (no JSON on the crashed act's stdout).
+ *   Transient (don't park): outcome "error" (client threw / spawn failed), status 429 (rate-limit), any 5xx
+ *     (500/502/503/529), or 409 fenced (the card's gen moved on — next pass re-derives).
+ *   Deterministic (park): 422 bad_act / 403 unauthorized / any other 4xx — these never self-heal by retrying.
+ * A result with no numeric status (and not the "error" envelope) is treated as deterministic — the safe
+ * default is to park (matches the pre-#65 escalate-always behavior).
+ * @param {{outcome?:string, status?:number|string}|null|undefined} result
+ * @returns {boolean} true iff the failure is transient (caller must NOT park)
+ */
+export function isTransientActFailure(result) {
+  if (!result) return true; // no result at all → client crashed before emitting → transient
+  if (result.outcome === "error") return true; // makeRun's crash/no-JSON envelope (network throw / spawn fail)
+  const s = Number(result.status);
+  if (Number.isNaN(s)) return false; // unknown shape → deterministic (safe default: park)
+  if (s === 429 || s >= 500) return true; // rate-limit / server error → board degraded
+  if (s === 409) return true; // fenced — gen moved on; next pass re-derives, don't park
+  return false; // 422 bad_act / 403 unauthorized / other 4xx → deterministic → park
+}
+
 /** Detect a board "bounce budget exhausted" 422 on a REJECT (thrash cap → escalate, don't re-loop). */
 function isBounceBudget(r) {
   if (r?.outcome !== "gate_blocked") return false;
@@ -292,6 +319,16 @@ export async function routeVerdict({
       await call("escalate.mjs", [id, reason]);
     };
 
+    /** Transient-aware variant (#65): set act_failed always, but PARK (escalate) only when the failure is
+     * DETERMINISTIC. A transient board blip (429/5xx/network/409-fenced) is left to retry next pass instead
+     * of parking the card for a human. Used by the highest-frequency reconcile-time acts (link-pr/push/reject).
+     * NOTE: advance/decompose intentionally keep failAct (park-always) — a partial decompose must park to
+     * avoid re-decompose duplicates regardless of failure class. */
+    const failActMaybePark = async (script, result, reason) => {
+      actFailed = { script, result: result ?? null };
+      if (!isTransientActFailure(result)) await call("escalate.mjs", [id, reason]);
+    };
+
     // ---- worker advance ------------------------------------------------------
     if (status === "advance") {
       const mv = await call("move.mjs", [id, gen, ctx.to, ctx.role]);
@@ -334,7 +371,7 @@ export async function routeVerdict({
         const r = await call("reject.mjs", [id, gen, verdict.to, ctx.role]);
         if (r && !r.ok) {
           if (isBounceBudget(r)) await call("escalate.mjs", [id, `bounce budget: ${ctx.state}→${verdict.to}`]);
-          else await failAct("reject.mjs", r, `reject act failed (${ctx.state}→${verdict.to}): ${r?.reason ?? r?.outcome ?? "no detail"}`);
+          else await failActMaybePark("reject.mjs", r, `reject act failed (${ctx.state}→${verdict.to}): ${r?.reason ?? r?.outcome ?? "no detail"}`); // #65: transient → retry, not park
         }
       } else {
         // advisor reject — derive the single backward edge from the compiled machine.
@@ -343,7 +380,7 @@ export async function routeVerdict({
           const r = await call("reject.mjs", [id, gen, derivedTo, ctx.role]); // under the ADVISOR's role, not the owner
           if (r && !r.ok) {
             if (isBounceBudget(r)) await call("escalate.mjs", [id, `bounce budget: ${ctx.state}→${derivedTo}`]);
-            else await failAct("reject.mjs", r, `advisor reject act failed (${ctx.state}→${derivedTo}): ${r?.reason ?? r?.outcome ?? "no detail"}`);
+            else await failActMaybePark("reject.mjs", r, `advisor reject act failed (${ctx.state}→${derivedTo}): ${r?.reason ?? r?.outcome ?? "no detail"}`); // #65: transient → retry, not park
           }
         } else {
           // 0 or >1 REJECT edges → ambiguous; never guess.
@@ -361,7 +398,12 @@ export async function routeVerdict({
         ? await call("push.mjs", [id, gen, repo, pr, head]) // pr_link already exists → re-point head
         : await call("link-pr.mjs", [id, gen, repo, pr, head]); // first submission (work/reclaim) → create pr_link
       if (!(submit && submit.ok)) {
-        await failAct(ctx.kind === "respawn" ? "push.mjs" : "link-pr.mjs", submit, `submit act failed for ${id}: ${submit?.reason ?? submit?.outcome ?? "no detail"}`);
+        // #65: a transient board blip (429/5xx/network) must NOT park — link-pr/push fire on every dev
+        // submission; only a deterministic 422 bad_act parks. Transient → act_failed + retry next pass.
+        await failActMaybePark(ctx.kind === "respawn" ? "push.mjs" : "link-pr.mjs", submit, `submit act failed for ${id}: ${submit?.reason ?? submit?.outcome ?? "no detail"}`);
+        // A failed submit never created/updated the pr_link, so reattach-ci (which re-fires the CI webhook
+        // against that row) is pointless — skip it (#65 tidy-up). Next pass re-derives + retries the submit.
+        return { acts, dispatches, advisorClear422, spawnDeferred, actFailed };
       }
       // Recover stranded CI (GH #21) — CI completion often lands before LINK_PR creates the row.
       await call("reattach-ci.mjs", [id, repo, pr, head]); // best-effort CI recovery — never escalate
@@ -943,7 +985,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const cfg = loadConfig();
   const K = cfg.pace?.maxCardsPerPass ?? 1;
   const ttlS = cfg.pace?.claimTtlS ?? 1800;
-  const maxConcurrent = cfg.pace?.maxConcurrent ?? Infinity;
+  // Bounded code-default (#65): a `pace`-less board.json must not inherit an uncapped Infinity ceiling —
+  // that would let a single partially-degraded pass park a large batch. 4 matches the shipped board.json.
+  const maxConcurrent = cfg.pace?.maxConcurrent ?? 4;
   const breakerCooldownS = cfg.pace?.breakerCooldownS ?? 600;
   const inflightStaleS = Number(cfg.runtime?.inflightStaleS ?? 7200);
 
