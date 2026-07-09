@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { TOOLS, handleMessage } from "../skills/yarradev-run/scripts/mcp/server.mjs";
+import { route, makeCall } from "../skills/yarradev-run/scripts/mcp/proxy.mjs";
 
 const NAMES = ["status","inflight","recent","logs","explain","attention","pause","resume","tick","retry"];
 
@@ -43,4 +44,27 @@ test("tools/call surfaces errors as isError, not a thrown response", async () =>
 
 test("a notification (no id) yields no response", async () => {
   assert.equal(await handleMessage({ jsonrpc: "2.0", method: "notifications/initialized" }, { call: async () => {} }), null);
+});
+
+test("route maps reads to GET and controls to POST with params", () => {
+  assert.deepEqual(route("status", {}), { method: "GET", path: "/status" });
+  assert.deepEqual(route("logs", { id: "c1" }), { method: "GET", path: "/logs?id=c1" });
+  assert.deepEqual(route("explain", { card: "c1" }), { method: "GET", path: "/explain?card=c1" });
+  assert.deepEqual(route("pause", {}), { method: "POST", path: "/pause" });
+  assert.deepEqual(route("retry", { card: "c1" }), { method: "POST", path: "/retry?card=c1" });
+});
+
+test("makeCall fetches the mapped route and returns JSON", async () => {
+  const seen = [];
+  const fetchImpl = async (url, opts) => { seen.push([url, opts?.method ?? "GET"]); return { ok: true, json: async () => ({ url, method: opts?.method ?? "GET" }) }; };
+  const call = await makeCall({ port: 4599, fetchImpl });
+  const r = await call("retry", { card: "c9" });
+  assert.deepEqual(seen, [["http://127.0.0.1:4599/retry?card=c9", "POST"]]);
+  assert.equal(r.method, "POST");
+});
+
+test("makeCall throws a clear error when the runner is unreachable", async () => {
+  const fetchImpl = async () => { throw new Error("ECONNREFUSED"); };
+  const call = await makeCall({ port: 4599, fetchImpl });
+  await assert.rejects(call("status", {}), /runner not reachable on 127\.0\.0\.1:4599/);
 });
