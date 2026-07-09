@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, watch } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildActions, buildProvider, clientUrl, ensureManifestFile } from "../bin/yarradev.mjs";
+import { buildActions, buildProvider, clientUrl, ensureManifestFile, GET, COMMANDS } from "../bin/yarradev.mjs";
 
 test("buildActions.pause pauses the daemon", () => {
   let paused = false;
@@ -16,6 +16,29 @@ test("buildActions.pause pauses the daemon", () => {
 test("clientUrl maps subcommands to control-plane routes", () => {
   assert.equal(clientUrl("status", 4599), "http://127.0.0.1:4599/status");
   assert.equal(clientUrl("pause", 4599), "http://127.0.0.1:4599/pause");
+});
+
+// #72.1: the read routes the control plane serves as GET must be in the GET set (only status/logs were).
+test("GET set covers every read route the control plane serves", () => {
+  for (const r of ["status", "logs", "inflight", "recent", "attention", "explain", "cost"]) {
+    assert.ok(GET.has(r), `${r} must be a GET route`);
+  }
+  for (const w of ["pause", "resume", "tick", "retry", "stop"]) {
+    assert.ok(!GET.has(w), `${w} must not be a GET route`);
+    assert.ok(COMMANDS.has(w), `${w} must be a known command`);
+  }
+});
+
+// #72.2: logs / explain / retry must forward the card id as the query param each route expects.
+test("clientUrl forwards a card id as the route's expected query param", () => {
+  assert.equal(clientUrl("logs", 4599, "c1"), "http://127.0.0.1:4599/logs?id=c1");
+  assert.equal(clientUrl("explain", 4599, "c1"), "http://127.0.0.1:4599/explain?card=c1");
+  assert.equal(clientUrl("retry", 4599, "c1"), "http://127.0.0.1:4599/retry?card=c1");
+  // routes that take no id ignore a stray arg
+  assert.equal(clientUrl("status", 4599, "c1"), "http://127.0.0.1:4599/status");
+  // absent/empty arg → no query string
+  assert.equal(clientUrl("logs", 4599), "http://127.0.0.1:4599/logs");
+  assert.equal(clientUrl("logs", 4599, ""), "http://127.0.0.1:4599/logs");
 });
 
 // Fix 6: stop() must pause the daemon FIRST, before tearing down sources — otherwise an in-flight
@@ -76,7 +99,7 @@ test("buildActions.retry clears the lease via the client then ticks", async () =
   const client = { calls: [], async getEnriched() { return { current_gen: 4 }; }, async clearLease(id, gen) { this.calls.push([id, gen]); } };
   const actions = buildActions({ daemon, client });
   const params = new URLSearchParams({ card: "c1" });
-  assert.deepEqual(await actions.retry(params), { ok: true, cardId: "c1", clearedGen: 4 });
+  assert.deepEqual(await actions.retry(params), { ok: true, outcome: null, cardId: "c1", clearedGen: 4 });
   assert.deepEqual(client.calls, [["c1", 4]]);
   assert.equal(ticked, 1);
 });
