@@ -41,7 +41,7 @@ import {
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { stateDir, manifestPath } from "./runner/paths.mjs";
+import { stateDir, manifestPath, resolveHome } from "./runner/paths.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 
@@ -349,13 +349,14 @@ export function sanitizeEnv(env) {
 }
 
 /**
- * Resolve the agent file path. Mirrors the bash:
- * `${CLAUDE_PLUGIN_ROOT:-$HOME/work/yarradev/yarradev-board}/agents/<role>.md`.
+ * Resolve the agent file path. Routed through resolveHome() (runner/paths.mjs) so it's headless-safe:
+ * `$YARRADEV_HOME/agents/<role>.md`, falling back to `$CLAUDE_PLUGIN_ROOT`, falling back to the computed
+ * repo root — never a hardcoded machine-specific path (was `${CLAUDE_PLUGIN_ROOT:-$HOME/work/yarradev/yarradev-board}`).
  * @param {string} role
  * @returns {string}
  */
 export function resolveAgentFile(role) {
-  const base = process.env.CLAUDE_PLUGIN_ROOT ?? join(homedir(), "work", "yarradev", "yarradev-board");
+  const base = resolveHome();
   return join(base, "agents", `${role}.md`);
 }
 
@@ -736,7 +737,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 Usage: dispatch.mjs <role> <cardId> <promptFile> [--gen <gen>]
        dispatch.mjs --run <role> <cardId> <promptFile> --verdict <path> --model <m> --effort <e> --tools <t> [--gen <g>] [--worktree-flag <flag>] [--orig-pwd <dir>] [--manifest <path>]
 
-The invoker reads agent config from $CLAUDE_PLUGIN_ROOT/agents/<role>.md and runs claude -p as a
+The invoker reads agent config from $YARRADEV_HOME/agents/<role>.md (falling back to $CLAUDE_PLUGIN_ROOT,
+then the computed repo root) and runs claude -p as a
 background process with the agent's model/effort/tools. Output is captured to a verdict file.
 Returns IMMEDIATELY — the caller reconciles verdicts on a subsequent pass via the shared manifest.
 
