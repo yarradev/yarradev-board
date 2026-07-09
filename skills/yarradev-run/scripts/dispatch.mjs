@@ -41,12 +41,13 @@ import {
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stateDir, manifestPath } from "./runner/paths.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 
-// === Constants — preserved verbatim from the bash tool (source of truth) ===
-const STATE_DIR = process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share", "claude-bg");
-const MANIFEST_FILE = join(STATE_DIR, "dispatch-manifest.jsonl");
+// === Constants — routed through runner/paths.mjs (the single source of truth dispatch and pass share) ===
+const STATE_DIR = stateDir();
+const MANIFEST_FILE = manifestPath();
 const TMP_BASE = join(STATE_DIR, "dispatch");
 
 // Retry constants (env-overridable for tests). Bash: MAX_ATTEMPTS=4, BACKOFF=20 (seconds, doubled).

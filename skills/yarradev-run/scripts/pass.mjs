@@ -23,20 +23,16 @@
  */
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./plugin-io.mjs";
 import { inFlightCardIds } from "./in-flight.mjs";
+import { stateDir as resolveStateDir, manifestPath as resolveManifestPath } from "./runner/paths.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const SCRIPTS_DIR = HERE;
 
-// State dir mirrors in-flight.mjs / dispatch-and-wait.mjs ($XDG_DATA_HOME or ~/.local/share/claude-bg).
-function defaultStateDir() {
-  return process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share", "claude-bg");
-}
-const MANIFEST_NAME = "dispatch-manifest.jsonl";
+// State/manifest dir routed through runner/paths.mjs (the single source of truth dispatch and pass share).
 const CONSUMED_NAME = "dispatch-consumed.jsonl";
 const CONTEXT_NAME = "dispatch-context.jsonl";
 const BREAKER_NAME = "dispatch-breaker.json";
@@ -977,8 +973,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const { makeClient } = await import("./plugin-io.mjs");
   const client = makeClient({ role: "orchestrator" });
 
-  const stateDir = defaultStateDir();
-  const manifestPath = join(stateDir, MANIFEST_NAME);
+  const stateDir = resolveStateDir();
+  const manifestPath = resolveManifestPath();
   const consumedPath = join(stateDir, CONSUMED_NAME);
   const contextPath = join(stateDir, CONTEXT_NAME);
 

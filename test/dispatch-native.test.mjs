@@ -53,7 +53,7 @@ test("native invoke: prints a dispatch-request, records pending, does NOT block 
     env: {
       ...process.env,
       YARRADEV_DISPATCH_MODE: "native",
-      XDG_DATA_HOME: dir,
+      YARRADEV_STATE_DIR: dir,
       CLAUDE_PLUGIN_ROOT: dir, // resolveAgentFile → <root>/agents/<role>.md
     },
   });
@@ -68,8 +68,8 @@ test("native invoke: prints a dispatch-request, records pending, does NOT block 
   const combined = readFileSync(req.promptPath, "utf8");
   assert.match(combined, /Do the dev work\./);
   assert.match(combined, /implement X/);
-  // pending entry landed in the manifest under the sandbox state dir. STATE_DIR = XDG_DATA_HOME (when set,
-  // used verbatim — no "claude-bg" subdir appended); MANIFEST_FILE = join(STATE_DIR, "dispatch-manifest.jsonl").
+  // pending entry landed in the manifest under the sandbox state dir. STATE_DIR = YARRADEV_STATE_DIR (when
+  // set, used verbatim per runner/paths.mjs); MANIFEST_FILE = join(STATE_DIR, "dispatch-manifest.jsonl").
   const manifest = readFileSync(join(dir, "dispatch-manifest.jsonl"), "utf8");
   assert.match(manifest, /"status":"pending"[^\n]*"cardId":"card-9"/);
 });
@@ -84,7 +84,7 @@ test("native invoke: board.json roles override model/worktree/subagentType in th
     JSON.stringify({ roles: { developer: { model: "opus", worktree: false, subagentType: "Explore" } } }));
   const r = spawnSync(process.execPath, [DISPATCH, "developer", "card-ov", promptFile], {
     encoding: "utf8", cwd,
-    env: { ...process.env, YARRADEV_DISPATCH_MODE: "native", XDG_DATA_HOME: dir, CLAUDE_PLUGIN_ROOT: dir },
+    env: { ...process.env, YARRADEV_DISPATCH_MODE: "native", YARRADEV_STATE_DIR: dir, CLAUDE_PLUGIN_ROOT: dir },
   });
   assert.equal(r.status, 0, r.stderr);
   const req = JSON.parse(r.stdout.trim().split("\n").pop());
@@ -99,7 +99,7 @@ test("native invoke: absent roles block → agents/*.md model + WORKTREE_ROLES d
   mkdirSync(cwd, { recursive: true });
   const r = spawnSync(process.execPath, [DISPATCH, "developer", "card-def", promptFile], {
     encoding: "utf8", cwd,
-    env: { ...process.env, YARRADEV_DISPATCH_MODE: "native", XDG_DATA_HOME: dir, CLAUDE_PLUGIN_ROOT: dir },
+    env: { ...process.env, YARRADEV_DISPATCH_MODE: "native", YARRADEV_STATE_DIR: dir, CLAUDE_PLUGIN_ROOT: dir },
   });
   assert.equal(r.status, 0, r.stderr);
   const req = JSON.parse(r.stdout.trim().split("\n").pop());
@@ -114,7 +114,7 @@ test("--complete: writes the verdict file and appends a done manifest entry", ()
   const r = spawnSync(process.execPath, [DISPATCH, "--complete", verdictPath, "card-3", "--gen", "5", "--role", "tester"], {
     encoding: "utf8",
     input: "```json\n{\"status\":\"advance\",\"to\":\"done\"}\n```\n",
-    env: { ...process.env, XDG_DATA_HOME: dir },
+    env: { ...process.env, YARRADEV_STATE_DIR: dir },
   });
   assert.equal(r.status, 0, r.stderr);
   assert.match(readFileSync(verdictPath, "utf8"), /"status":"advance"/);
