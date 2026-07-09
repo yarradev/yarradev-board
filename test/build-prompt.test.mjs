@@ -4,7 +4,36 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { composePrompt } from "../skills/yarradev-run/scripts/build-prompt.mjs";
+import { composePrompt, modeForGate } from "../skills/yarradev-run/scripts/build-prompt.mjs";
+
+// GH #73: the developer's `mode` must be propagated into the dispatch prompt, derived from the stage gate.
+test("modeForGate maps the mechanical gate to mechanical, everything else to judgement", () => {
+  assert.equal(modeForGate("mechanical"), "mechanical");
+  assert.equal(modeForGate("judgement"), "judgement");
+  assert.equal(modeForGate("human"), "judgement");
+  assert.equal(modeForGate("barrier"), "judgement");
+  assert.equal(modeForGate(undefined), "judgement"); // no gate on the stage
+  assert.equal(modeForGate(null), "judgement");
+});
+
+test("composePrompt emits mode: mechanical for a mechanical stage (restores gh pr create → submitted)", () => {
+  const out = composePrompt({
+    role: "developer",
+    card: { id: "c1", state: "dev", title: "Add cache" },
+    doName: "acme:main", to: "test", mode: "mechanical",
+  });
+  assert.match(out, /^mode: mechanical$/m);
+});
+
+test("composePrompt emits mode: judgement explicitly, and defaults to judgement when mode is omitted", () => {
+  const withJudgement = composePrompt({
+    role: "developer", card: { id: "c1", state: "spec", title: "t" }, doName: "d", to: "dev", mode: "judgement",
+  });
+  assert.match(withJudgement, /^mode: judgement$/m);
+  // omitted → default judgement (matches agents/developer.md's default)
+  const omitted = composePrompt({ role: "developer", card: { id: "c1", state: "spec", title: "t" }, doName: "d", to: "dev" });
+  assert.match(omitted, /^mode: judgement$/m);
+});
 
 test("renders the dispatch context block from the card + args", () => {
   const out = composePrompt({
