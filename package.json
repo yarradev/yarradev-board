@@ -1,6 +1,6 @@
 {
   "name": "yarradev",
-  "version": "0.3.0",
+  "version": "0.16.0",
   "private": false,
   "type": "module",
   "description": "yarradev orchestrator plugin — orchestrator skill + role agents that drive a yarradev HTTP board on your Claude subscription.",

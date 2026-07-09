@@ -3,3 +3,7 @@ node_modules/
 *.log
 # Per-install board config carries the live apiBase/doName — keep the template only.
 skills/**/config/board.json
+
+# Local graphify knowledge graph — regenerable build artifact, contains machine-specific
+# absolute paths (.graphify_root/.graphify_python). Rebuild with /graphify; do not ship in the plugin.
+graphify-out/
