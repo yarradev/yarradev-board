@@ -1,7 +1,170 @@
-<!doctype html><meta charset=utf8><title>yarradev-run</title>
-<style>body{font:14px system-ui;margin:2rem;max-width:44rem}code{background:#eee;padding:.1rem .3rem}</style>
-<h1>yarradev-run</h1><pre id=s>loading…</pre>
+<!doctype html>
+<meta charset="utf8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>yarradev-run · cockpit</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --line: #232a33; --fg: #e6edf3; --dim: #8b949e;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    --cyan: #39c5cf; --green: #3fb950; --amber: #d29922; --red: #f85149; --gray: #6e7681;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 14px; }
+  #app { min-height: 100vh; }
+
+  .bar { display: flex; align-items: center; gap: 1rem; padding: .6rem 1rem; border-bottom: 1px solid var(--line);
+         background: var(--panel); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+  .bar .title { font-weight: 600; letter-spacing: .01em; }
+  .bar .spacer { flex: 1; }
+  .pill { font-family: var(--mono); font-size: 12px; padding: .12rem .5rem; border-radius: 999px; border: 1px solid var(--line); }
+  .pill.CLOSED { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, transparent); }
+  .pill.HALF_OPEN { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, transparent); }
+  .pill.OPEN { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); }
+  .meta { color: var(--dim); font-family: var(--mono); font-size: 12px; }
+  button { font-family: var(--sans); font-size: 13px; color: var(--fg); background: #21262d; border: 1px solid var(--line);
+           padding: .3rem .7rem; border-radius: 6px; cursor: pointer; }
+  button:hover { background: #2a3138; }
+  button:disabled { opacity: .5; cursor: default; }
+
+  #err { display: none; margin: .5rem 1rem 0; padding: .4rem .7rem; border-radius: 6px; font-size: 13px;
+         color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); border: 1px solid color-mix(in srgb, var(--red) 40%, transparent); }
+  #err.show { display: block; }
+
+  main { padding: 1rem; }
+  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+  thead th { text-align: left; color: var(--dim); font-weight: 500; font-size: 11px; letter-spacing: .06em;
+             text-transform: uppercase; padding: .3rem .6rem; border-bottom: 1px solid var(--line); }
+  tbody td { padding: .35rem .6rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: #12171e; }
+  tbody tr.selected { background: #1c2530; }
+  td.card { color: var(--fg); }
+  td.age, td.last { color: var(--dim); }
+  .state { font-weight: 600; }
+  .s-inflight { color: var(--cyan); }
+  .s-advanced { color: var(--green); }
+  .s-retrying { color: var(--amber); }
+  .s-escalated { color: var(--red); }
+  tr.row-escalated { background: color-mix(in srgb, var(--red) 8%, transparent); }
+  tr.row-retrying { background: color-mix(in srgb, var(--amber) 6%, transparent); }
+  .empty { color: var(--dim); padding: 1.2rem .6rem; font-family: var(--mono); }
+</style>
+
+<div id="app" data-app="yarradev-board-cockpit">
+  <header class="bar">
+    <span class="title">yarradev-run</span>
+    <span id="breaker" class="pill">—</span>
+    <span id="run" class="meta">…</span>
+    <span id="tick" class="meta"></span>
+    <span id="count" class="meta"></span>
+    <span class="spacer"></span>
+    <button id="btn-pause">Pause</button>
+    <button id="btn-tick">Tick</button>
+  </header>
+
+  <div id="err"></div>
+  <div id="attention"></div>
+
+  <main>
+    <table>
+      <thead><tr><th>Card</th><th>Role</th><th>State</th><th>Age</th><th>Last</th></tr></thead>
+      <tbody id="board"><tr><td colspan="5" class="empty">loading…</td></tr></tbody>
+    </table>
+  </main>
+</div>
+
 <script>
-async function tick(){try{const r=await fetch('/status');document.getElementById('s').textContent=JSON.stringify(await r.json(),null,2)}catch(e){document.getElementById('s').textContent=String(e)}}
-tick();setInterval(tick,3000);
+  var selectedCard = null;
+  var runnerStatus = { paused: false };
+  var tickBase = null;      // {nextTickInS, at} captured at each /status success, for a smooth countdown
+
+  function stateClass(s) { return "s-" + String(s || "").toLowerCase().replace(/[^a-z]/g, ""); }
+  function fmtAge(a) { return a == null ? "-" : a + "s"; }
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+
+  async function getJSON(path) {
+    var r = await fetch(path);
+    if (!r.ok) throw new Error(path + " → " + r.status);
+    return r.json();
+  }
+
+  function showErr(msg) { var e = document.getElementById("err"); e.textContent = msg; e.classList.add("show"); }
+  function clearErr() { document.getElementById("err").classList.remove("show"); }
+
+  function renderHeader() {
+    var b = String(runnerStatus.breaker || "CLOSED");
+    var bp = document.getElementById("breaker"); bp.textContent = "breaker " + b; bp.className = "pill " + b;
+    document.getElementById("run").textContent = runnerStatus.paused ? "paused" : (runnerStatus.passRunning ? "running" : "idle");
+    document.getElementById("btn-pause").textContent = runnerStatus.paused ? "Resume" : "Pause";
+  }
+
+  function renderCountdown() {
+    var el = document.getElementById("tick");
+    if (!tickBase || tickBase.nextTickInS == null) { el.textContent = ""; return; }
+    var left = Math.max(0, Math.round(tickBase.nextTickInS - (Date.now() - tickBase.at) / 1000));
+    el.textContent = "next " + left + "s";
+  }
+
+  function renderBoard(rows) {
+    var tb = document.getElementById("board");
+    var inflight = 0;
+    if (!rows || rows.length === 0) {
+      tb.innerHTML = '<tr><td colspan="5" class="empty">(idle — nothing in flight)</td></tr>';
+      document.getElementById("count").textContent = "";
+      return;
+    }
+    var html = "";
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i] || {};
+      if (r.state === "in-flight") inflight++;
+      var rowCls = r.state === "ESCALATED" ? " row-escalated" : (r.state === "retrying" ? " row-retrying" : "");
+      var sel = r.cardId === selectedCard ? " selected" : "";
+      html += '<tr class="' + (sel.trim() + rowCls).trim() + '" tabindex="0" data-card="' + esc(r.cardId) + '">'
+        + '<td class="card" title="' + esc(r.cardId) + '">' + esc(r.cardId) + '</td>'
+        + '<td>' + esc(r.role || "-") + '</td>'
+        + '<td class="state ' + stateClass(r.state) + '">' + esc(r.state) + '</td>'
+        + '<td class="age">' + fmtAge(r.ageS) + '</td>'
+        + '<td class="last">' + esc(r.last || "") + '</td>'
+        + '</tr>';
+    }
+    tb.innerHTML = html;
+    document.getElementById("count").textContent = inflight + " in-flight";
+  }
+
+  async function poll() {
+    try {
+      var res = await Promise.all([getJSON("/board"), getJSON("/status")]);
+      runnerStatus = res[1] || {};
+      tickBase = { nextTickInS: runnerStatus.nextTickInS, at: Date.now() };
+      renderHeader();
+      renderBoard(res[0] || []);
+      renderCountdown();
+      clearErr();
+    } catch (e) {
+      showErr("runner not reachable — retrying… (" + e.message + ")");
+    }
+  }
+
+  async function control(action) {
+    var btn = action === "tick" ? document.getElementById("btn-tick") : document.getElementById("btn-pause");
+    btn.disabled = true;
+    try { await fetch("/" + action, { method: "POST" }); } catch (e) { /* surfaced by next poll */ }
+    await poll();
+    btn.disabled = false;
+  }
+
+  document.getElementById("btn-pause").addEventListener("click", function () { control(runnerStatus.paused ? "resume" : "pause"); });
+  document.getElementById("btn-tick").addEventListener("click", function () { control("tick"); });
+  document.getElementById("board").addEventListener("click", function (ev) {
+    var tr = ev.target.closest("tr[data-card]"); if (!tr) return;
+    selectedCard = tr.getAttribute("data-card");
+    document.querySelectorAll("#board tr.selected").forEach(function (x) { x.classList.remove("selected"); });
+    tr.classList.add("selected");
+    // detail panel is wired in the next task
+  });
+
+  poll();
+  setInterval(poll, 1000);
+  setInterval(renderCountdown, 1000);
 </script>

@@ -14,12 +14,14 @@ test("GET /status returns provider status as JSON", async () => {
   server.close();
 });
 
-test("GET / serves the monitor page", async () => {
+test("GET / serves the cockpit HTML with the app marker", async () => {
   const server = createControlPlane({ provider: {}, actions: {} });
   const port = await listen(server);
   const r = await fetch(`http://127.0.0.1:${port}/`);
   assert.equal(r.status, 200);
   assert.match(r.headers.get("content-type") ?? "", /text\/html/);
+  const body = await r.text();
+  assert.match(body, /data-app="yarradev-board-cockpit"/);
   server.close();
 });
 
