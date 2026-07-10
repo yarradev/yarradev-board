@@ -68,6 +68,23 @@
                 padding: .6rem; overflow: auto; max-height: 42vh; white-space: pre-wrap; word-break: break-word; }
   #detail .dfoot { display: flex; gap: .5rem; padding: .7rem 1rem; border-top: 1px solid var(--line); }
   .note { color: var(--dim); font-family: var(--mono); font-size: 12px; }
+
+  #attention { margin: .6rem 1rem 0; }
+  .attn-strip { padding: .5rem .7rem; border-radius: 6px;
+    background: color-mix(in srgb, var(--red) 12%, transparent); border: 1px solid color-mix(in srgb, var(--red) 40%, transparent); }
+  .attn-strip .ah { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--red); margin-bottom: .3rem; }
+  .attn-strip .row { display: flex; align-items: center; gap: .6rem; padding: .12rem 0; font-family: var(--mono); font-size: 13px; }
+  .attn-strip .row .cid { color: var(--red); font-weight: 600; word-break: break-all; }
+  .attn-strip .row .last { color: var(--dim); flex: 1; }
+  .attn-strip button { padding: .1rem .5rem; font-size: 12px; }
+  .board-attn { margin: .7rem 1rem 0; border: 1px solid var(--line); border-radius: 6px; }
+  .board-attn .ba-head { display: flex; align-items: center; gap: .6rem; padding: .4rem .7rem; }
+  .board-attn .ba-head .t { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--dim); cursor: pointer; }
+  .board-attn .ba-head .stale { color: var(--dim); font-family: var(--mono); font-size: 11px; }
+  .board-attn .ba-body { padding: .1rem .7rem .5rem; }
+  .board-attn .ba-row { display: flex; align-items: center; gap: .5rem; padding: .2rem 0; font-family: var(--mono); font-size: 12px; }
+  .board-attn .ba-row .cid { color: var(--fg); word-break: break-all; }
+  .tag { font-size: 11px; padding: .04rem .45rem; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent); color: var(--amber); }
 </style>
 
 <div id="app" data-app="yarradev-board-cockpit">
@@ -84,6 +101,15 @@
 
   <div id="err"></div>
   <div id="attention"></div>
+  <section class="board-attn" id="board-attn" hidden>
+    <div class="ba-head">
+      <span class="t" id="ba-toggle">board attention ▾</span>
+      <span class="stale" id="ba-stale"></span>
+      <span style="flex:1"></span>
+      <button id="ba-refresh" title="refresh (board API call)">↻</button>
+    </div>
+    <div class="ba-body" id="ba-body"></div>
+  </section>
 
   <main>
     <table>
@@ -171,6 +197,7 @@
       tickBase = { nextTickInS: runnerStatus.nextTickInS, at: Date.now() };
       renderHeader();
       renderBoard(res[0] || []);
+      renderAttention(res[0] || []);
       renderCountdown();
       clearErr();
     } catch (e) {
@@ -251,14 +278,79 @@
   document.getElementById("scrim").addEventListener("click", closeDetail);
   document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeDetail(); });
   document.getElementById("d-refresh").addEventListener("click", function () { if (selectedCard) loadDetail(selectedCard); });
+  async function retryCard(cardId) {
+    try { await fetch("/retry?card=" + encodeURIComponent(cardId), { method: "POST" }); } catch (e) { /* surfaced by next poll */ }
+  }
+
   document.getElementById("d-retry").addEventListener("click", async function () {
     if (!selectedCard) return;
     var btn = document.getElementById("d-retry"); btn.disabled = true;
-    try { await fetch("/retry?card=" + encodeURIComponent(selectedCard), { method: "POST" }); } catch (e) { /* surfaced by reload */ }
+    await retryCard(selectedCard);
     await loadDetail(selectedCard); await poll(); btn.disabled = false;
   });
 
+  // ---- attention: local ESCALATED strip (free, 1s) ----
+  function renderAttention(rows) {
+    var esc_rows = (rows || []).filter(function (r) { return r && r.state === "ESCALATED"; });
+    var el = document.getElementById("attention");
+    if (esc_rows.length === 0) { el.innerHTML = ""; return; }
+    var html = '<div class="attn-strip"><div class="ah">needs a human · ' + esc_rows.length + '</div>';
+    for (var i = 0; i < esc_rows.length; i++) {
+      var r = esc_rows[i];
+      html += '<div class="row"><span class="cid">' + esc(r.cardId) + '</span>'
+        + '<span class="last">' + esc(r.last || "") + '</span>'
+        + '<button data-retry="' + esc(r.cardId) + '">Retry</button></div>';
+    }
+    html += "</div>";
+    el.innerHTML = html;
+  }
+  document.getElementById("attention").addEventListener("click", async function (ev) {
+    var btn = ev.target.closest("button[data-retry]"); if (!btn) return;
+    btn.disabled = true; await retryCard(btn.getAttribute("data-retry")); await poll();
+  });
+
+  // ---- board attention: /attention (N+1 board call), slow 15s / manual ----
+  var attnCollapsed = false;
+  async function attnPoll() {
+    var sec = document.getElementById("board-attn"), body = document.getElementById("ba-body"), stale = document.getElementById("ba-stale");
+    try {
+      var rows = await getJSON("/attention");
+      if (!rows || rows.length === 0) { sec.hidden = true; return; }
+      sec.hidden = false;
+      stale.textContent = "updated just now";
+      attnStamp = Date.now();
+      if (!attnCollapsed) {
+        var html = "";
+        for (var i = 0; i < rows.length; i++) {
+          var r = rows[i] || {};
+          var tags = (r.reasons || []).map(function (x) { return '<span class="tag">' + esc(x) + "</span>"; }).join(" ");
+          html += '<div class="ba-row"><span class="cid">' + esc(r.cardId) + '</span>'
+            + '<span class="note">' + esc(r.state || "") + "</span>" + tags + "</div>";
+        }
+        body.innerHTML = html;
+      }
+    } catch (e) {
+      sec.hidden = false; body.innerHTML = '<div class="note">couldn\'t load /attention — ' + esc(e.message) + "</div>";
+    }
+  }
+  var attnStamp = null;
+  function tickStale() {
+    if (attnStamp == null) return;
+    var s = Math.round((Date.now() - attnStamp) / 1000);
+    document.getElementById("ba-stale").textContent = "updated " + s + "s ago";
+  }
+  document.getElementById("ba-refresh").addEventListener("click", attnPoll);
+  document.getElementById("ba-toggle").addEventListener("click", function () {
+    attnCollapsed = !attnCollapsed;
+    document.getElementById("ba-body").style.display = attnCollapsed ? "none" : "";
+    this.textContent = attnCollapsed ? "board attention ▸" : "board attention ▾";
+    if (!attnCollapsed) attnPoll();
+  });
+
   poll();
+  attnPoll();
   setInterval(poll, 1000);
   setInterval(renderCountdown, 1000);
+  setInterval(attnPoll, 15000);
+  setInterval(tickStale, 1000);
 </script>
