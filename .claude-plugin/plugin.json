@@ -1,6 +1,6 @@
 {
   "name": "yarradev",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "yarradev board orchestrator: a reconciliation-loop that drives a yarradev HTTP board (Cloudflare Durable Object) and dispatches role subagents (designer/developer/tester/security-advisor/code-reviewer/devops/releaser) through a gated lifecycle (backlog→spec→dev→test→done→staging→prod) as detached `claude -p` processes via the headless `yarradev run` daemon (or Agent-tool subagents in the legacy in-session mode) — running on your own Claude subscription.",
   "author": { "name": "Yarra Systems" },
   "homepage": "https://github.com/yarradev/yarradev-board",

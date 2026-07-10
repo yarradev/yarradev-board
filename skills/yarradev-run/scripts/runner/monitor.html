@@ -1,7 +1,372 @@
-<!doctype html><meta charset=utf8><title>yarradev-run</title>
-<style>body{font:14px system-ui;margin:2rem;max-width:44rem}code{background:#eee;padding:.1rem .3rem}</style>
-<h1>yarradev-run</h1><pre id=s>loading…</pre>
+<!doctype html>
+<meta charset="utf8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>yarradev-run · cockpit</title>
+<style>
+  :root {
+    --bg: #0a0d13; --panel: #10141b; --line: #1c2330; --fg: #dbe3ec; --dim: #77848f;
+    --hover: #12171f; --sel: #161d29; --btn: #171d26; --btn-h: #1f2733; --focus: #5b8fd6;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    --cyan: #37c9d6; --green: #55d066; --amber: #e5b23a; --red: #ff6a5f; --gray: #64717f;
+    --eyebrow: 11px; --track: .14em;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 14px;
+         -webkit-font-smoothing: antialiased; }
+  #app { min-height: 100vh; }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: 3px; }
+
+  .bar { display: flex; align-items: center; gap: 1rem; padding: .55rem 1rem; border-bottom: 1px solid var(--line);
+         background: var(--panel); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+  .bar .title { font-weight: 600; font-size: var(--eyebrow); letter-spacing: var(--track); text-transform: uppercase; color: var(--fg); }
+  .bar .spacer { flex: 1; }
+  .pill { font-family: var(--mono); font-size: 11px; letter-spacing: .02em; padding: .1rem .5rem; border-radius: 4px;
+          border: 1px solid var(--line); color: var(--dim); }
+  .pill.CLOSED { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, transparent); }
+  .pill.HALF_OPEN { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, transparent); }
+  .pill.OPEN { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
+  .meta { color: var(--dim); font-family: var(--mono); font-size: 12px; }
+  button { font-family: var(--sans); font-size: 13px; color: var(--fg); background: var(--btn); border: 1px solid var(--line);
+           padding: .28rem .7rem; border-radius: 5px; cursor: pointer; transition: background .12s ease, border-color .12s ease; }
+  button:hover { background: var(--btn-h); border-color: color-mix(in srgb, var(--fg) 18%, var(--line)); }
+  button:disabled { opacity: .45; cursor: default; }
+
+  #err { display: none; margin: .55rem 1rem 0; padding: .4rem .7rem; border-radius: 5px; font-size: 13px;
+         color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); border: 1px solid color-mix(in srgb, var(--red) 40%, transparent); }
+  #err.show { display: block; }
+
+  main { padding: .5rem 0 2rem; }
+  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+  thead th { text-align: left; color: var(--dim); font-weight: 500; font-size: var(--eyebrow); letter-spacing: var(--track);
+             text-transform: uppercase; padding: .5rem .7rem; border-bottom: 1px solid var(--line); }
+  thead th:first-child { padding-left: 1rem; }
+  tbody td { padding: .38rem .7rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  tbody td:first-child { padding-left: 1rem; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--hover); }
+  tbody tr.selected { background: var(--sel); }
+  td.card { color: var(--fg); }
+  tbody td:nth-child(2), td.age, td.last { color: var(--dim); }
+  .state { font-weight: 600; letter-spacing: .01em; }
+  .s-inflight { color: var(--cyan); }
+  .s-advanced { color: var(--green); }
+  .s-retrying { color: var(--amber); }
+  .s-escalated { color: var(--red); }
+  .s-skipped { color: var(--gray); }
+  /* Signature — the deviation spine: only rows that broke normal flow get a left bar, so the
+     table's left edge reads as a scannable "exceptions" column; normal in-flight/advanced rows stay clean. */
+  tr.row-escalated td:first-child { box-shadow: inset 3px 0 0 var(--red); }
+  tr.row-retrying td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
+  tr.row-escalated { background: color-mix(in srgb, var(--red) 6%, transparent); }
+  tr.row-retrying { background: color-mix(in srgb, var(--amber) 5%, transparent); }
+  .empty { color: var(--dim); padding: 1.4rem 1rem; font-family: var(--mono); }
+
+  #scrim { position: fixed; inset: 0; background: rgba(0,0,0,.45); opacity: 0; pointer-events: none; transition: opacity .18s ease; z-index: 8; }
+  #scrim.open { opacity: 1; pointer-events: auto; }
+  #detail { position: fixed; top: 0; right: 0; height: 100vh; width: min(460px, 92vw); background: var(--panel);
+            border-left: 1px solid var(--line); transform: translateX(100%); transition: transform .18s ease; z-index: 9;
+            display: flex; flex-direction: column; }
+  #detail.open { transform: translateX(0); }
+  #detail .dhead { display: flex; align-items: center; gap: .6rem; padding: .7rem 1rem; border-bottom: 1px solid var(--line); }
+  #detail .did { font-family: var(--mono); font-size: 13px; font-weight: 600; word-break: break-all; flex: 1; }
+  #detail .dbody { padding: 1rem; overflow: auto; flex: 1; }
+  #detail h3 { font-size: var(--eyebrow); letter-spacing: var(--track); text-transform: uppercase; color: var(--dim); margin: 1.1rem 0 .45rem; font-weight: 500; }
+  #detail h3:first-child { margin-top: 0; }
+  #detail .kv { display: grid; grid-template-columns: max-content 1fr; gap: .15rem .8rem; font-family: var(--mono); font-size: 12px; }
+  #detail .kv .k { color: var(--dim); }
+  #detail .kv .v { color: var(--fg); word-break: break-all; }
+  #detail pre { font-family: var(--mono); font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+                padding: .6rem; overflow: auto; max-height: 42vh; white-space: pre-wrap; word-break: break-word; }
+  #detail .dfoot { display: flex; gap: .5rem; padding: .7rem 1rem; border-top: 1px solid var(--line); }
+  .note { color: var(--dim); font-family: var(--mono); font-size: 12px; }
+
+  #attention { margin: .6rem 1rem 0; }
+  .attn-strip { padding: .55rem .7rem .55rem 1rem; border-radius: 5px; box-shadow: inset 3px 0 0 var(--red);
+    background: color-mix(in srgb, var(--red) 12%, transparent); border: 1px solid color-mix(in srgb, var(--red) 40%, transparent); }
+  .attn-strip .ah { font-size: var(--eyebrow); letter-spacing: var(--track); text-transform: uppercase; color: var(--red); margin-bottom: .35rem; }
+  .attn-strip .row { display: flex; align-items: center; gap: .6rem; padding: .12rem 0; font-family: var(--mono); font-size: 13px; }
+  .attn-strip .row .cid { color: var(--red); font-weight: 600; word-break: break-all; }
+  .attn-strip .row .last { color: var(--dim); flex: 1; }
+  .attn-strip button { padding: .1rem .5rem; font-size: 12px; }
+  .board-attn { margin: .7rem 1rem 0; border: 1px solid var(--line); border-radius: 6px; }
+  .board-attn .ba-head { display: flex; align-items: center; gap: .6rem; padding: .4rem .7rem; }
+  .board-attn .ba-head .t { font-size: var(--eyebrow); letter-spacing: var(--track); text-transform: uppercase; color: var(--dim); cursor: pointer; }
+  .board-attn .ba-head .stale { color: var(--dim); font-family: var(--mono); font-size: 11px; }
+  .board-attn .ba-body { padding: .1rem .7rem .5rem; }
+  .board-attn .ba-row { display: flex; align-items: center; gap: .5rem; padding: .2rem 0; font-family: var(--mono); font-size: 12px; }
+  .board-attn .ba-row .cid { color: var(--fg); word-break: break-all; }
+  .tag { font-size: 11px; padding: .04rem .45rem; border-radius: 4px; border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent); color: var(--amber); }
+
+  @media (prefers-reduced-motion: reduce) {
+    #scrim, #detail, button { transition: none; }
+  }
+</style>
+
+<div id="app" data-app="yarradev-board-cockpit">
+  <header class="bar">
+    <span class="title">yarradev-run</span>
+    <span id="breaker" class="pill">—</span>
+    <span id="run" class="meta">…</span>
+    <span id="tick" class="meta"></span>
+    <span id="count" class="meta"></span>
+    <span class="spacer"></span>
+    <button id="btn-pause">Pause</button>
+    <button id="btn-tick">Tick</button>
+  </header>
+
+  <div id="err"></div>
+  <div id="attention"></div>
+  <section class="board-attn" id="board-attn" hidden>
+    <div class="ba-head">
+      <span class="t" id="ba-toggle">board attention ▾</span>
+      <span class="stale" id="ba-stale"></span>
+      <span style="flex:1"></span>
+      <button id="ba-refresh" title="refresh (board API call)">↻</button>
+    </div>
+    <div class="ba-body" id="ba-body"></div>
+  </section>
+
+  <main>
+    <table>
+      <thead><tr><th>Card</th><th>Role</th><th>State</th><th>Age</th><th>Last</th></tr></thead>
+      <tbody id="board"><tr><td colspan="5" class="empty">loading…</td></tr></tbody>
+    </table>
+  </main>
+
+  <div id="scrim"></div>
+  <aside id="detail" hidden>
+    <div class="dhead">
+      <span class="did" id="d-id"></span>
+      <button id="d-close" title="Close (Esc)">✕</button>
+    </div>
+    <div class="dbody" id="d-body"></div>
+    <div class="dfoot">
+      <button id="d-retry">Retry</button>
+      <button id="d-refresh">↻ Refresh</button>
+    </div>
+  </aside>
+</div>
+
 <script>
-async function tick(){try{const r=await fetch('/status');document.getElementById('s').textContent=JSON.stringify(await r.json(),null,2)}catch(e){document.getElementById('s').textContent=String(e)}}
-tick();setInterval(tick,3000);
+  var selectedCard = null;
+  var runnerStatus = { paused: false };
+  var tickBase = null;      // {nextTickInS, at} captured at each /status success, for a smooth countdown
+
+  function stateClass(s) { return "s-" + String(s || "").toLowerCase().replace(/[^a-z]/g, ""); }
+  function fmtAge(a) { return a == null ? "-" : a + "s"; }
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+
+  async function getJSON(path) {
+    var r = await fetch(path);
+    if (!r.ok) throw new Error(path + " → " + r.status);
+    return r.json();
+  }
+
+  function showErr(msg) { var e = document.getElementById("err"); e.textContent = msg; e.classList.add("show"); }
+  function clearErr() { document.getElementById("err").classList.remove("show"); }
+
+  function renderHeader() {
+    var b = String(runnerStatus.breaker || "CLOSED");
+    var bp = document.getElementById("breaker"); bp.textContent = "breaker " + b; bp.className = "pill " + b;
+    document.getElementById("run").textContent = runnerStatus.paused ? "paused" : (runnerStatus.passRunning ? "running" : "idle");
+    document.getElementById("btn-pause").textContent = runnerStatus.paused ? "Resume" : "Pause";
+  }
+
+  function renderCountdown() {
+    var el = document.getElementById("tick");
+    if (!tickBase || tickBase.nextTickInS == null) { el.textContent = ""; return; }
+    var left = Math.max(0, Math.round(tickBase.nextTickInS - (Date.now() - tickBase.at) / 1000));
+    el.textContent = "next " + left + "s";
+  }
+
+  function renderBoard(rows) {
+    var tb = document.getElementById("board");
+    var inflight = 0;
+    if (!rows || rows.length === 0) {
+      tb.innerHTML = '<tr><td colspan="5" class="empty">(idle — nothing in flight)</td></tr>';
+      document.getElementById("count").textContent = "";
+      return;
+    }
+    var html = "";
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i] || {};
+      if (r.state === "in-flight") inflight++;
+      var rowCls = r.state === "ESCALATED" ? " row-escalated" : (r.state === "retrying" ? " row-retrying" : "");
+      var sel = r.cardId === selectedCard ? " selected" : "";
+      html += '<tr class="' + (sel.trim() + rowCls).trim() + '" tabindex="0" data-card="' + esc(r.cardId) + '">'
+        + '<td class="card" title="' + esc(r.cardId) + '">' + esc(r.cardId) + '</td>'
+        + '<td>' + esc(r.role || "-") + '</td>'
+        + '<td class="state ' + stateClass(r.state) + '">' + esc(r.state) + '</td>'
+        + '<td class="age">' + fmtAge(r.ageS) + '</td>'
+        + '<td class="last">' + esc(r.last || "") + '</td>'
+        + '</tr>';
+    }
+    tb.innerHTML = html;
+    document.getElementById("count").textContent = inflight + " in-flight";
+  }
+
+  async function poll() {
+    try {
+      var res = await Promise.all([getJSON("/board"), getJSON("/status")]);
+      runnerStatus = res[1] || {};
+      tickBase = { nextTickInS: runnerStatus.nextTickInS, at: Date.now() };
+      renderHeader();
+      renderBoard(res[0] || []);
+      renderAttention(res[0] || []);
+      renderCountdown();
+      clearErr();
+    } catch (e) {
+      showErr("runner not reachable — retrying… (" + e.message + ")");
+    }
+  }
+
+  async function control(action) {
+    var btn = action === "tick" ? document.getElementById("btn-tick") : document.getElementById("btn-pause");
+    btn.disabled = true;
+    try { await fetch("/" + action, { method: "POST" }); } catch (e) { /* surfaced by next poll */ }
+    await poll();
+    btn.disabled = false;
+  }
+
+  document.getElementById("btn-pause").addEventListener("click", function () { control(runnerStatus.paused ? "resume" : "pause"); });
+  document.getElementById("btn-tick").addEventListener("click", function () { control("tick"); });
+  document.getElementById("board").addEventListener("click", function (ev) {
+    var tr = ev.target.closest("tr[data-card]"); if (!tr) return;
+    document.querySelectorAll("#board tr.selected").forEach(function (x) { x.classList.remove("selected"); });
+    tr.classList.add("selected");
+    openDetail(tr.getAttribute("data-card"));
+  });
+
+  // ---- detail panel ----
+  function kv(obj, keys) {
+    var out = "";
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      var v = obj && obj[k] != null && obj[k] !== "" ? obj[k] : "—";
+      out += '<div class="k">' + esc(k) + '</div><div class="v">' + esc(String(v)) + '</div>';
+    }
+    return '<div class="kv">' + out + '</div>';
+  }
+
+  function renderDetail(ex, logs) {
+    ex = ex || {}; logs = logs || {};
+    var html = "";
+    html += "<h3>Board</h3>" + (ex.board ? kv(ex.board, ["state", "ci_rollup", "linked_head_sha", "blocked"]) : '<div class="note">not on board</div>');
+    html += "<h3>Local dispatch</h3>" + (ex.local ? kv(ex.local, ["role", "status", "gen", "at"]) : '<div class="note">no local dispatch</div>');
+    html += "<h3>Breaker</h3><div class=\"kv\"><div class=\"k\">state</div><div class=\"v\">" + esc(ex.breaker || "—") + "</div></div>";
+    html += "<h3>Verdict / logs</h3><pre>" + esc((logs.text || "").trim() || "no verdict yet") + "</pre>";
+    return html;
+  }
+
+  async function loadDetail(cardId) {
+    var body = document.getElementById("d-body");
+    body.innerHTML = '<div class="note">loading…</div>';
+    try {
+      var res = await Promise.all([
+        getJSON("/explain?card=" + encodeURIComponent(cardId)),
+        getJSON("/logs?id=" + encodeURIComponent(cardId)),
+      ]);
+      body.innerHTML = renderDetail(res[0], res[1]);
+    } catch (e) {
+      body.innerHTML = '<div class="note">couldn\'t load detail — ' + esc(e.message) + '</div>';
+    }
+  }
+
+  function openDetail(cardId) {
+    selectedCard = cardId;
+    document.getElementById("d-id").textContent = cardId;
+    var d = document.getElementById("detail"), sc = document.getElementById("scrim");
+    d.hidden = false;
+    requestAnimationFrame(function () { d.classList.add("open"); sc.classList.add("open"); });
+    loadDetail(cardId);
+  }
+
+  function closeDetail() {
+    selectedCard = null;
+    var d = document.getElementById("detail"), sc = document.getElementById("scrim");
+    d.classList.remove("open"); sc.classList.remove("open");
+    setTimeout(function () { d.hidden = true; }, 200);
+    document.querySelectorAll("#board tr.selected").forEach(function (x) { x.classList.remove("selected"); });
+  }
+
+  document.getElementById("d-close").addEventListener("click", closeDetail);
+  document.getElementById("scrim").addEventListener("click", closeDetail);
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeDetail(); });
+  document.getElementById("d-refresh").addEventListener("click", function () { if (selectedCard) loadDetail(selectedCard); });
+  async function retryCard(cardId) {
+    try { await fetch("/retry?card=" + encodeURIComponent(cardId), { method: "POST" }); } catch (e) { /* surfaced by next poll */ }
+  }
+
+  document.getElementById("d-retry").addEventListener("click", async function () {
+    if (!selectedCard) return;
+    var btn = document.getElementById("d-retry"); btn.disabled = true;
+    await retryCard(selectedCard);
+    await loadDetail(selectedCard); await poll(); btn.disabled = false;
+  });
+
+  // ---- attention: local ESCALATED strip (free, 1s) ----
+  function renderAttention(rows) {
+    var esc_rows = (rows || []).filter(function (r) { return r && r.state === "ESCALATED"; });
+    var el = document.getElementById("attention");
+    if (esc_rows.length === 0) { el.innerHTML = ""; return; }
+    var html = '<div class="attn-strip"><div class="ah">needs a human · ' + esc_rows.length + '</div>';
+    for (var i = 0; i < esc_rows.length; i++) {
+      var r = esc_rows[i];
+      html += '<div class="row"><span class="cid">' + esc(r.cardId) + '</span>'
+        + '<span class="last">' + esc(r.last || "") + '</span>'
+        + '<button data-retry="' + esc(r.cardId) + '">Retry</button></div>';
+    }
+    html += "</div>";
+    el.innerHTML = html;
+  }
+  document.getElementById("attention").addEventListener("click", async function (ev) {
+    var btn = ev.target.closest("button[data-retry]"); if (!btn) return;
+    btn.disabled = true; await retryCard(btn.getAttribute("data-retry")); await poll();
+  });
+
+  // ---- board attention: /attention (N+1 board call), slow 15s / manual ----
+  var attnCollapsed = false;
+  async function attnPoll() {
+    var sec = document.getElementById("board-attn"), body = document.getElementById("ba-body"), stale = document.getElementById("ba-stale");
+    try {
+      var rows = await getJSON("/attention");
+      if (!rows || rows.length === 0) { sec.hidden = true; return; }
+      sec.hidden = false;
+      stale.textContent = "updated just now";
+      attnStamp = Date.now();
+      if (!attnCollapsed) {
+        var html = "";
+        for (var i = 0; i < rows.length; i++) {
+          var r = rows[i] || {};
+          var tags = (r.reasons || []).map(function (x) { return '<span class="tag">' + esc(x) + "</span>"; }).join(" ");
+          html += '<div class="ba-row"><span class="cid">' + esc(r.cardId) + '</span>'
+            + '<span class="note">' + esc(r.state || "") + "</span>" + tags + "</div>";
+        }
+        body.innerHTML = html;
+      }
+    } catch (e) {
+      sec.hidden = false; body.innerHTML = '<div class="note">couldn\'t load /attention — ' + esc(e.message) + "</div>";
+    }
+  }
+  var attnStamp = null;
+  function tickStale() {
+    if (attnStamp == null) return;
+    var s = Math.round((Date.now() - attnStamp) / 1000);
+    document.getElementById("ba-stale").textContent = "updated " + s + "s ago";
+  }
+  document.getElementById("ba-refresh").addEventListener("click", attnPoll);
+  document.getElementById("ba-toggle").addEventListener("click", function () {
+    attnCollapsed = !attnCollapsed;
+    document.getElementById("ba-body").style.display = attnCollapsed ? "none" : "";
+    this.textContent = attnCollapsed ? "board attention ▸" : "board attention ▾";
+    if (!attnCollapsed) attnPoll();
+  });
+
+  poll();
+  attnPoll();
+  setInterval(poll, 1000);
+  setInterval(renderCountdown, 1000);
+  setInterval(attnPoll, 15000);
+  setInterval(tickStale, 1000);
 </script>
