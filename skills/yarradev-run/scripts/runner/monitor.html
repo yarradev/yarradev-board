@@ -4,51 +4,63 @@
 <title>yarradev-run · cockpit</title>
 <style>
   :root {
-    --bg: #0d1117; --panel: #161b22; --line: #232a33; --fg: #e6edf3; --dim: #8b949e;
+    --bg: #0a0d13; --panel: #10141b; --line: #1c2330; --fg: #dbe3ec; --dim: #77848f;
+    --hover: #12171f; --sel: #161d29; --btn: #171d26; --btn-h: #1f2733; --focus: #5b8fd6;
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
     --sans: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-    --cyan: #39c5cf; --green: #3fb950; --amber: #d29922; --red: #f85149; --gray: #6e7681;
+    --cyan: #37c9d6; --green: #55d066; --amber: #e5b23a; --red: #ff6a5f; --gray: #64717f;
+    --eyebrow: 11px; --track: .14em;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 14px; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 14px;
+         -webkit-font-smoothing: antialiased; }
   #app { min-height: 100vh; }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: 3px; }
 
-  .bar { display: flex; align-items: center; gap: 1rem; padding: .6rem 1rem; border-bottom: 1px solid var(--line);
+  .bar { display: flex; align-items: center; gap: 1rem; padding: .55rem 1rem; border-bottom: 1px solid var(--line);
          background: var(--panel); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
-  .bar .title { font-weight: 600; letter-spacing: .01em; }
+  .bar .title { font-weight: 600; font-size: var(--eyebrow); letter-spacing: var(--track); text-transform: uppercase; color: var(--fg); }
   .bar .spacer { flex: 1; }
-  .pill { font-family: var(--mono); font-size: 12px; padding: .12rem .5rem; border-radius: 999px; border: 1px solid var(--line); }
-  .pill.CLOSED { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, transparent); }
-  .pill.HALF_OPEN { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, transparent); }
-  .pill.OPEN { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); }
+  .pill { font-family: var(--mono); font-size: 11px; letter-spacing: .02em; padding: .1rem .5rem; border-radius: 4px;
+          border: 1px solid var(--line); color: var(--dim); }
+  .pill.CLOSED { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, transparent); }
+  .pill.HALF_OPEN { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, transparent); }
+  .pill.OPEN { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
   .meta { color: var(--dim); font-family: var(--mono); font-size: 12px; }
-  button { font-family: var(--sans); font-size: 13px; color: var(--fg); background: #21262d; border: 1px solid var(--line);
-           padding: .3rem .7rem; border-radius: 6px; cursor: pointer; }
-  button:hover { background: #2a3138; }
-  button:disabled { opacity: .5; cursor: default; }
+  button { font-family: var(--sans); font-size: 13px; color: var(--fg); background: var(--btn); border: 1px solid var(--line);
+           padding: .28rem .7rem; border-radius: 5px; cursor: pointer; transition: background .12s ease, border-color .12s ease; }
+  button:hover { background: var(--btn-h); border-color: color-mix(in srgb, var(--fg) 18%, var(--line)); }
+  button:disabled { opacity: .45; cursor: default; }
 
-  #err { display: none; margin: .5rem 1rem 0; padding: .4rem .7rem; border-radius: 6px; font-size: 13px;
+  #err { display: none; margin: .55rem 1rem 0; padding: .4rem .7rem; border-radius: 5px; font-size: 13px;
          color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); border: 1px solid color-mix(in srgb, var(--red) 40%, transparent); }
   #err.show { display: block; }
 
-  main { padding: 1rem; }
+  main { padding: .5rem 0 2rem; }
   table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; }
-  thead th { text-align: left; color: var(--dim); font-weight: 500; font-size: 11px; letter-spacing: .06em;
-             text-transform: uppercase; padding: .3rem .6rem; border-bottom: 1px solid var(--line); }
-  tbody td { padding: .35rem .6rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  thead th { text-align: left; color: var(--dim); font-weight: 500; font-size: var(--eyebrow); letter-spacing: var(--track);
+             text-transform: uppercase; padding: .5rem .7rem; border-bottom: 1px solid var(--line); }
+  thead th:first-child { padding-left: 1rem; }
+  tbody td { padding: .38rem .7rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  tbody td:first-child { padding-left: 1rem; }
   tbody tr { cursor: pointer; }
-  tbody tr:hover { background: #12171e; }
-  tbody tr.selected { background: #1c2530; }
+  tbody tr:hover { background: var(--hover); }
+  tbody tr.selected { background: var(--sel); }
   td.card { color: var(--fg); }
-  td.age, td.last { color: var(--dim); }
-  .state { font-weight: 600; }
+  tbody td:nth-child(2), td.age, td.last { color: var(--dim); }
+  .state { font-weight: 600; letter-spacing: .01em; }
   .s-inflight { color: var(--cyan); }
   .s-advanced { color: var(--green); }
   .s-retrying { color: var(--amber); }
   .s-escalated { color: var(--red); }
-  tr.row-escalated { background: color-mix(in srgb, var(--red) 8%, transparent); }
-  tr.row-retrying { background: color-mix(in srgb, var(--amber) 6%, transparent); }
-  .empty { color: var(--dim); padding: 1.2rem .6rem; font-family: var(--mono); }
+  .s-skipped { color: var(--gray); }
+  /* Signature — the deviation spine: only rows that broke normal flow get a left bar, so the
+     table's left edge reads as a scannable "exceptions" column; normal in-flight/advanced rows stay clean. */
+  tr.row-escalated td:first-child { box-shadow: inset 3px 0 0 var(--red); }
+  tr.row-retrying td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
+  tr.row-escalated { background: color-mix(in srgb, var(--red) 6%, transparent); }
+  tr.row-retrying { background: color-mix(in srgb, var(--amber) 5%, transparent); }
+  .empty { color: var(--dim); padding: 1.4rem 1rem; font-family: var(--mono); }
 
   #scrim { position: fixed; inset: 0; background: rgba(0,0,0,.45); opacity: 0; pointer-events: none; transition: opacity .18s ease; z-index: 8; }
   #scrim.open { opacity: 1; pointer-events: auto; }
@@ -59,7 +71,7 @@
   #detail .dhead { display: flex; align-items: center; gap: .6rem; padding: .7rem 1rem; border-bottom: 1px solid var(--line); }
   #detail .did { font-family: var(--mono); font-size: 13px; font-weight: 600; word-break: break-all; flex: 1; }
   #detail .dbody { padding: 1rem; overflow: auto; flex: 1; }
-  #detail h3 { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--dim); margin: 1rem 0 .4rem; font-weight: 500; }
+  #detail h3 { font-size: var(--eyebrow); letter-spacing: var(--track); text-transform: uppercase; color: var(--dim); margin: 1.1rem 0 .45rem; font-weight: 500; }
   #detail h3:first-child { margin-top: 0; }
   #detail .kv { display: grid; grid-template-columns: max-content 1fr; gap: .15rem .8rem; font-family: var(--mono); font-size: 12px; }
   #detail .kv .k { color: var(--dim); }
@@ -70,21 +82,25 @@
   .note { color: var(--dim); font-family: var(--mono); font-size: 12px; }
 
   #attention { margin: .6rem 1rem 0; }
-  .attn-strip { padding: .5rem .7rem; border-radius: 6px;
+  .attn-strip { padding: .55rem .7rem .55rem 1rem; border-radius: 5px; box-shadow: inset 3px 0 0 var(--red);
     background: color-mix(in srgb, var(--red) 12%, transparent); border: 1px solid color-mix(in srgb, var(--red) 40%, transparent); }
-  .attn-strip .ah { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--red); margin-bottom: .3rem; }
+  .attn-strip .ah { font-size: var(--eyebrow); letter-spacing: var(--track); text-transform: uppercase; color: var(--red); margin-bottom: .35rem; }
   .attn-strip .row { display: flex; align-items: center; gap: .6rem; padding: .12rem 0; font-family: var(--mono); font-size: 13px; }
   .attn-strip .row .cid { color: var(--red); font-weight: 600; word-break: break-all; }
   .attn-strip .row .last { color: var(--dim); flex: 1; }
   .attn-strip button { padding: .1rem .5rem; font-size: 12px; }
   .board-attn { margin: .7rem 1rem 0; border: 1px solid var(--line); border-radius: 6px; }
   .board-attn .ba-head { display: flex; align-items: center; gap: .6rem; padding: .4rem .7rem; }
-  .board-attn .ba-head .t { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--dim); cursor: pointer; }
+  .board-attn .ba-head .t { font-size: var(--eyebrow); letter-spacing: var(--track); text-transform: uppercase; color: var(--dim); cursor: pointer; }
   .board-attn .ba-head .stale { color: var(--dim); font-family: var(--mono); font-size: 11px; }
   .board-attn .ba-body { padding: .1rem .7rem .5rem; }
   .board-attn .ba-row { display: flex; align-items: center; gap: .5rem; padding: .2rem 0; font-family: var(--mono); font-size: 12px; }
   .board-attn .ba-row .cid { color: var(--fg); word-break: break-all; }
-  .tag { font-size: 11px; padding: .04rem .45rem; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent); color: var(--amber); }
+  .tag { font-size: 11px; padding: .04rem .45rem; border-radius: 4px; border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent); color: var(--amber); }
+
+  @media (prefers-reduced-motion: reduce) {
+    #scrim, #detail, button { transition: none; }
+  }
 </style>
 
 <div id="app" data-app="yarradev-board-cockpit">
