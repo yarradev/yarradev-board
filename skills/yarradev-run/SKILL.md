@@ -28,7 +28,7 @@ executes them; cost reporting isn't available yet). See the plugin `README.md`'s
 **Observability — live status board.** The daemon exposes `yarradev board` and `yarradev watch` CLI commands for observing the board's activity in real time:
 - `yarradev board` — print the live status board once (cards in-flight + recently resolved/escalated). Local state only; no board API calls.
 - `yarradev watch [--interval <ms>]` — the same board, redrawn live (default 1s). Local state only; no board API calls.
-- **Browser cockpit** at `http://127.0.0.1:<port>/` — the live board (state-colored grid) with a status/control bar (breaker, next-tick, pause/resume/tick), a per-card slide-in panel (merged `explain` + `logs`, with retry), and a "needs a human" attention strip. Polls `/board`+`/status` ~1s (local); the board-attention section calls the board `/attention` on a slow 15s/manual refresh.
+- **Browser cockpit** at `http://127.0.0.1:<port>/` — the live board (state-colored grid) with a status/control bar (breaker, next-tick, pause/resume/tick), a per-card slide-in panel (merged `explain` + `logs`, with retry — and **answer a card's open question** inline, posting `ANSWER` under the human identity), and a "needs a human" attention strip. Polls `/board`+`/status` ~1s (local); the board-attention section calls the board `/attention` on a slow 15s/manual refresh.
 
 The `yarradev-runner` MCP's `board` tool returns the same underlying data as a one-shot JSON snapshot; the live redraw (`watch`) is CLI-only.
 
