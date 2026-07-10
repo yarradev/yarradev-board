@@ -79,3 +79,13 @@ test("GET /board returns the assembled board rows from the provider", async () =
   assert.deepEqual(await res.json(), rows);
   server.close();
 });
+
+test("POST /answer invokes the answer action with card + text from the query string", async () => {
+  let got = null;
+  const server = createControlPlane({ provider: {}, actions: { answer: (p) => { got = { card: p.get("card"), text: p.get("text") }; return { ok: true }; } } });
+  const port = await listen(server);
+  const r = await fetch(`http://127.0.0.1:${port}/answer?card=c1&text=${encodeURIComponent("looks good, resume")}`, { method: "POST" });
+  assert.equal(r.status, 200);
+  assert.deepEqual(got, { card: "c1", text: "looks good, resume" });
+  server.close();
+});

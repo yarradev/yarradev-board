@@ -78,6 +78,13 @@
   #detail .kv .v { color: var(--fg); word-break: break-all; }
   #detail pre { font-family: var(--mono); font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
                 padding: .6rem; overflow: auto; max-height: 42vh; white-space: pre-wrap; word-break: break-word; }
+  #detail .oq { border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent); border-radius: 5px;
+                background: color-mix(in srgb, var(--amber) 7%, transparent); box-shadow: inset 3px 0 0 var(--amber);
+                padding: .6rem .7rem; margin-bottom: 1rem; }
+  #detail .oq-q { font-family: var(--mono); font-size: 12px; color: var(--fg); margin-bottom: .5rem; white-space: pre-wrap; }
+  #detail .oq textarea { width: 100%; min-height: 4.5rem; resize: vertical; background: var(--bg); color: var(--fg);
+                border: 1px solid var(--line); border-radius: 5px; font-family: var(--mono); font-size: 12px; padding: .5rem; }
+  #detail .oq-act { display: flex; align-items: center; gap: .6rem; margin-top: .5rem; flex-wrap: wrap; }
   #detail .dfoot { display: flex; gap: .5rem; padding: .7rem 1rem; border-top: 1px solid var(--line); }
   .note { color: var(--dim); font-family: var(--mono); font-size: 12px; }
 
@@ -85,7 +92,7 @@
   .attn-strip { padding: .55rem .7rem .55rem 1rem; border-radius: 5px; box-shadow: inset 3px 0 0 var(--red);
     background: color-mix(in srgb, var(--red) 12%, transparent); border: 1px solid color-mix(in srgb, var(--red) 40%, transparent); }
   .attn-strip .ah { font-size: var(--eyebrow); letter-spacing: var(--track); text-transform: uppercase; color: var(--red); margin-bottom: .35rem; }
-  .attn-strip .row { display: flex; align-items: center; gap: .6rem; padding: .12rem 0; font-family: var(--mono); font-size: 13px; }
+  .attn-strip .row { display: flex; align-items: center; gap: .6rem; padding: .12rem 0; font-family: var(--mono); font-size: 13px; cursor: pointer; }
   .attn-strip .row .cid { color: var(--red); font-weight: 600; word-break: break-all; }
   .attn-strip .row .last { color: var(--dim); flex: 1; }
   .attn-strip button { padding: .1rem .5rem; font-size: 12px; }
@@ -94,7 +101,7 @@
   .board-attn .ba-head .t { font-size: var(--eyebrow); letter-spacing: var(--track); text-transform: uppercase; color: var(--dim); cursor: pointer; }
   .board-attn .ba-head .stale { color: var(--dim); font-family: var(--mono); font-size: 11px; }
   .board-attn .ba-body { padding: .1rem .7rem .5rem; }
-  .board-attn .ba-row { display: flex; align-items: center; gap: .5rem; padding: .2rem 0; font-family: var(--mono); font-size: 12px; }
+  .board-attn .ba-row { display: flex; align-items: center; gap: .5rem; padding: .2rem 0; font-family: var(--mono); font-size: 12px; cursor: pointer; }
   .board-attn .ba-row .cid { color: var(--fg); word-break: break-all; }
   .tag { font-size: 11px; padding: .04rem .45rem; border-radius: 4px; border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent); color: var(--amber); }
 
@@ -252,6 +259,19 @@
   function renderDetail(ex, logs) {
     ex = ex || {}; logs = logs || {};
     var html = "";
+    var oq = ex.board && Array.isArray(ex.board.open_questions) ? ex.board.open_questions : [];
+    if (oq.length) {
+      html += "<h3>Open question · needs a human</h3><div class=\"oq\">";
+      for (var qi = 0; qi < oq.length; qi++) {
+        var q = oq[qi] || {};
+        var qtext = q.text != null ? q.text : (q.question != null ? q.question : JSON.stringify(q));
+        var dl = q.deadline_ts != null ? ' <span class="note">· deadline ' + esc(String(q.deadline_ts)) + "</span>" : "";
+        html += '<div class="oq-q">' + esc(qtext) + dl + "</div>";
+      }
+      html += '<textarea id="oq-text" placeholder="Answer / note — leave blank to just resume"></textarea>'
+        + '<div class="oq-act"><button id="oq-submit">Answer &amp; resume</button><span id="oq-msg" class="note"></span></div>'
+        + "</div>";
+    }
     html += "<h3>Board</h3>" + (ex.board ? kv(ex.board, ["state", "ci_rollup", "linked_head_sha", "blocked"]) : '<div class="note">not on board</div>');
     html += "<h3>Local dispatch</h3>" + (ex.local ? kv(ex.local, ["role", "status", "gen", "at"]) : '<div class="note">no local dispatch</div>');
     html += "<h3>Breaker</h3><div class=\"kv\"><div class=\"k\">state</div><div class=\"v\">" + esc(ex.breaker || "—") + "</div></div>";
@@ -305,6 +325,24 @@
     await loadDetail(selectedCard); await poll(); btn.disabled = false;
   });
 
+  // Answer an open question (human-gate ANSWER via POST /answer). Delegated on the re-rendered panel body.
+  document.getElementById("d-body").addEventListener("click", async function (ev) {
+    if (!ev.target || ev.target.id !== "oq-submit" || !selectedCard) return;
+    var btn = ev.target, msg = document.getElementById("oq-msg"), ta = document.getElementById("oq-text");
+    var text = ta && ta.value.trim() ? ta.value.trim() : "Resume the card.";
+    btn.disabled = true; msg.textContent = "answering…";
+    try {
+      var r = await fetch("/answer?card=" + encodeURIComponent(selectedCard) + "&text=" + encodeURIComponent(text), { method: "POST" });
+      var out = await r.json();
+      if (out && out.ok) { msg.textContent = "answered — card resumes next pass"; await loadDetail(selectedCard); await poll(); }
+      else {
+        btn.disabled = false;
+        var why = (out && (out.reason || out.outcome)) || ("HTTP " + r.status);
+        msg.textContent = "couldn't answer — " + esc(why) + (out && out.outcome === "unauthorized" ? " (run the daemon with YDB_TOKEN_HUMAN)" : "");
+      }
+    } catch (e) { btn.disabled = false; msg.textContent = "couldn't answer — " + esc(e.message); }
+  });
+
   // ---- attention: local ESCALATED strip (free, 1s) ----
   function renderAttention(rows) {
     var esc_rows = (rows || []).filter(function (r) { return r && r.state === "ESCALATED"; });
@@ -313,7 +351,7 @@
     var html = '<div class="attn-strip"><div class="ah">needs a human · ' + esc_rows.length + '</div>';
     for (var i = 0; i < esc_rows.length; i++) {
       var r = esc_rows[i];
-      html += '<div class="row"><span class="cid">' + esc(r.cardId) + '</span>'
+      html += '<div class="row" data-card="' + esc(r.cardId) + '"><span class="cid">' + esc(r.cardId) + '</span>'
         + '<span class="last">' + esc(r.last || "") + '</span>'
         + '<button data-retry="' + esc(r.cardId) + '">Retry</button></div>';
     }
@@ -321,8 +359,10 @@
     el.innerHTML = html;
   }
   document.getElementById("attention").addEventListener("click", async function (ev) {
-    var btn = ev.target.closest("button[data-retry]"); if (!btn) return;
-    btn.disabled = true; await retryCard(btn.getAttribute("data-retry")); await poll();
+    var btn = ev.target.closest("button[data-retry]");
+    if (btn) { ev.stopPropagation(); btn.disabled = true; await retryCard(btn.getAttribute("data-retry")); await poll(); return; }
+    var row = ev.target.closest("[data-card]");
+    if (row) openDetail(row.getAttribute("data-card"));
   });
 
   // ---- board attention: /attention (N+1 board call), slow 15s / manual ----
@@ -340,7 +380,7 @@
         for (var i = 0; i < rows.length; i++) {
           var r = rows[i] || {};
           var tags = (r.reasons || []).map(function (x) { return '<span class="tag">' + esc(x) + "</span>"; }).join(" ");
-          html += '<div class="ba-row"><span class="cid">' + esc(r.cardId) + '</span>'
+          html += '<div class="ba-row" data-card="' + esc(r.cardId) + '"><span class="cid">' + esc(r.cardId) + '</span>'
             + '<span class="note">' + esc(r.state || "") + "</span>" + tags + "</div>";
         }
         body.innerHTML = html;
@@ -356,6 +396,9 @@
     document.getElementById("ba-stale").textContent = "updated " + s + "s ago";
   }
   document.getElementById("ba-refresh").addEventListener("click", attnPoll);
+  document.getElementById("ba-body").addEventListener("click", function (ev) {
+    var row = ev.target.closest("[data-card]"); if (row) openDetail(row.getAttribute("data-card"));
+  });
   document.getElementById("ba-toggle").addEventListener("click", function () {
     attnCollapsed = !attnCollapsed;
     document.getElementById("ba-body").style.display = attnCollapsed ? "none" : "";
