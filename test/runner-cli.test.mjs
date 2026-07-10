@@ -121,3 +121,21 @@ test("buildProvider.status reflects the real breaker file", async () => {
   assert.equal(s.breaker, "CLOSED"); // absent file → CLOSED
   assert.equal(typeof s.nextTickInS, "number");
 });
+
+test("buildActions.answer posts ANSWER under the human client; committed → ok, empty text → default", async () => {
+  const calls = [];
+  const humanClient = { async answer(id, text) { calls.push([id, text]); return { outcome: "committed", status: 202 }; } };
+  const actions = buildActions({ daemon: { requestTick() {} }, humanClient });
+  const r = await actions.answer(new URLSearchParams({ card: "c1" })); // no text → default
+  assert.deepEqual(r, { ok: true, outcome: "committed", status: 202, reason: null, cardId: "c1" });
+  assert.deepEqual(calls, [["c1", "Resume the card."]]);
+});
+
+test("buildActions.answer surfaces a rejected ANSWER (no human token → 403) as ok:false, and refuses a missing card", async () => {
+  const humanClient = { async answer() { return { outcome: "unauthorized", status: 403, reason: "delegate scope does not permit ANSWER" }; } };
+  const actions = buildActions({ daemon: { requestTick() {} }, humanClient });
+  const r = await actions.answer(new URLSearchParams({ card: "c1", text: "go" }));
+  assert.equal(r.ok, false);
+  assert.equal(r.outcome, "unauthorized");
+  assert.deepEqual(await actions.answer(new URLSearchParams({})), { ok: false, reason: "no card" });
+});

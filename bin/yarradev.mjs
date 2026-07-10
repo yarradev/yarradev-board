@@ -9,12 +9,25 @@ import { renderBoard } from "../skills/yarradev-run/scripts/runner/render-board.
 import { readFileSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export function buildActions({ daemon, client, stopSources, getServer }) {
+export function buildActions({ daemon, client, humanClient, stopSources, getServer }) {
   return {
     pause: () => { daemon.pause(); return { ok: true, paused: true }; },
     resume: () => { daemon.resume(); return { ok: true, paused: false }; },
     tick: () => { daemon.requestTick(); return { ok: true }; },
     retry: (params) => retryCard(params?.get?.("card"), { client, requestTick: () => daemon.requestTick() }),
+    // Human-gate act: answer a card's open question (ANSWER, gen-exempt) under the human identity.
+    // Attempt-and-surface — a rejected act (no human token → 403) returns ok:false, never throws a 500.
+    answer: async (params) => {
+      const cardId = params?.get?.("card");
+      const text = params?.get?.("text") || "Resume the card.";
+      if (!cardId) return { ok: false, reason: "no card" };
+      try {
+        const r = await humanClient.answer(cardId, text);
+        return { ok: r?.outcome === "committed", outcome: r?.outcome ?? null, status: r?.status ?? null, reason: r?.reason ?? null, cardId: String(cardId) };
+      } catch (e) {
+        return { ok: false, outcome: "error", reason: String(e?.message ?? e), cardId: String(cardId) };
+      }
+    },
     // pause() FIRST: without it, an in-flight loop with dirty=true (a tick already queued while
     // the current pass runs) fires one more coalesced runPass after stop() has torn down sources.
     stop: () => { daemon.pause(); stopSources?.(); getServer?.()?.close(); return { ok: true, stopped: true }; },
@@ -70,12 +83,15 @@ async function run(env = process.env) {
   // Named boardClient (not `client`) to avoid shadowing the module-level CLI helper `client(cmd, port)`
   // used by the thin-client dispatch below (#69.4).
   const boardClient = makeClient({ role: "orchestrator" });
+  // Human identity for human-gate acts posted from the dashboard (ANSWER). resolveToken("human") →
+  // YDB_TOKEN_HUMAN, falling back to the shared YDB_TOKEN; a 403 is surfaced by the action, not fatal.
+  const humanClient = makeClient({ role: "human" });
   // Touch the manifest file BEFORE startSources() so fs.watch() attaches on a fresh machine (see
   // ensureManifestFile's docstring) — otherwise the watch silently never activates.
   ensureManifestFile(env);
   const stopSources = startSources(daemon, { manifestFile: manifestPath(env), intervalMs, debounceMs: config.runner?.debounceMs ?? 750 });
   let server;
-  const actions = buildActions({ daemon, client: boardClient, stopSources, getServer: () => server });
+  const actions = buildActions({ daemon, client: boardClient, humanClient, stopSources, getServer: () => server });
   server = createControlPlane({ provider: buildProvider({ daemon, config, env, client: boardClient }), actions });
   const port = config.runner?.port ?? 4599;
   server.listen(port, "127.0.0.1", () => process.stderr.write(`yarradev-run: control plane on http://127.0.0.1:${port}\n`));
