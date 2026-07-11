@@ -1007,6 +1007,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     process.stderr.write(`[pass] GET /config failed (${e?.message ?? e}); proceeding without REJECT-edge derivation\n`);
     return { transitions: [] };
   });
+  // §7: expose the board config's per-role model/effort to dispatch (both external + native modes read
+  // process.env). loadRoleOverrides merges this as the highest-precedence layer over local board.json.
+  process.env.YARRADEV_BOARD_ROLES = JSON.stringify(machine?.roles ?? {});
 
   const run = makeRun();
   const dispatch = makeDispatch(cfg.runtime?.dispatchTool, cfg.runtime?.dispatchMode ?? "external");
