@@ -622,6 +622,13 @@ export async function dispatchNew({
 // reconcileVerdicts — drive each unconsumed `done` verdict through routeVerdict
 // ============================================================================
 
+/** #81: advisor verdicts whose board acts take no lease/gen (advice/clean → advice.mjs, veto/hold →
+ * veto/hold.mjs). reconcileVerdicts routes these WITHOUT re-CLAIMing — a re-CLAIM would 409 on the card's
+ * active lease (the test-stage owner churning it) and the verdict would be dropped as "stale", stranding
+ * advisor_clear forever (the clean-card livelock). Their routeVerdict branches read only id / verdict.head /
+ * verdict.reason / ctx.role — never ctx.gen. */
+const GEN_EXEMPT_STATUSES = new Set(["advice", "clean", "veto", "hold"]);
+
 /**
  * For each unconsumed `done` manifest entry: read the verdict, re-CLAIM (fresh gen — recovers verdicts that
  * landed past lease-TTL), route via routeVerdict, CLEAR_LEASE, mark consumed. Best-effort throughout: a
@@ -660,12 +667,38 @@ export async function reconcileVerdicts({
     try {
       const verdictText = await readVerdict(verdictPath);
       const verdict = parseLastVerdict(verdictText);
+      const recorded = await readContext(verdictPath);
+
+      // #81: advice/clean/veto/hold are GEN-EXEMPT advisor acts — route them WITHOUT resolving a gen. A
+      // re-CLAIM here 409-collides with the card's ACTIVE lease (the test-stage owner) and the verdict would
+      // be dropped as "stale" (the clean-card livelock: no clean ADVICE lands → advisor_clear never clears →
+      // tester+reviewer re-dispatch forever). The advisor is fire-and-forget reshape-dispatched and holds no
+      // lease of its own, so there is also no lease to CLEAR here. routeVerdict's advice/veto/hold branches
+      // read only id / verdict.head / verdict.reason / ctx.role — never ctx.gen.
+      if (verdict && GEN_EXEMPT_STATUSES.has(verdict.status)) {
+        const ctx = { id: cardId, role, ...(recorded ?? {}) };
+        const r = await routeVerdict({ verdict, ctx, lifecycle, machine, run, dispatch, getCard, buildAdvisorPrompt });
+        await appendConsumed(verdictPath);
+        if (r.actFailed) {
+          logger(`[pass] reconcile ${verdictPath}: advisor act ${r.actFailed.script} FAILED (${r.actFailed.result?.reason ?? r.actFailed.result?.outcome ?? "no detail"}) — verdict NOT posted`);
+        }
+        results.push({
+          verdictPath,
+          cardId,
+          outcome: r.error ? "error" : r.actFailed ? "act_failed" : "routed",
+          advisorClear422: r.advisorClear422,
+          state: ctx.state ?? null,
+          to: ctx.to ?? null,
+          ...(r.actFailed ? { actFailed: r.actFailed } : {}),
+          ...(r.error ? { error: r.error } : {}),
+        });
+        continue;
+      }
 
       // Determine the gen to post under (#37). The dispatch-context ledger recorded the original CLAIM gen;
       // if it's STILL current (the lease is active — lease-TTL hadn't bumped it), use it directly. Re-CLAIMing
       // now would 409 on the active lease and leave the card stuck leased for up to claimTtlS. Only re-CLAIM
       // when the original gen is stale (lease expired → bumped) or absent — that's the #27 recovery path.
-      const recorded = await readContext(verdictPath);
       let gen;
       const originalGen = recorded?.gen;
       if (originalGen != null) {

@@ -136,8 +136,11 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
 
 > **PRIMARY — run `node $S/pass.mjs` each pass.** `pass.mjs` is the default conductor, and is what the
 > **headless `yarradev run` daemon ticks on your behalf** (you never invoke it by hand there). It
-> **reconciles** landed verdicts (re-CLAIM at verdict time, so a long subagent's verdict isn't stranded by
-> lease-TTL gen-bumps — fixes #27's recovery gap), **fans out** up to `effectiveK` concurrent dispatches —
+> **reconciles** landed verdicts (re-CLAIM at verdict time for **worker** verdicts, so a long subagent's
+> verdict isn't stranded by lease-TTL gen-bumps — fixes #27's recovery gap; **gen-exempt advisor verdicts
+> (`advice`/`clean`/`veto`/`hold`) post directly with no re-CLAIM and no CLEAR_LEASE — #81**, since the
+> reshape-dispatched advisor holds no lease and a re-CLAIM would 409 on the active lease and drop the
+> verdict, the clean-card livelock), **fans out** up to `effectiveK` concurrent dispatches —
 > `min(pace.maxCardsPerPass, pace.maxConcurrent − in-flight)`, dropped to 0/1 by the 529 circuit breaker
 > (#28), routes every verdict with full parity, and writes the `epic_done` signal. It is a **pure
 > reconcile → dispatch → exit per invocation** — there is no context-pressure check and no pass counter;
