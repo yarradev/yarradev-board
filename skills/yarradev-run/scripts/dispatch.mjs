@@ -244,10 +244,10 @@ const SUBAGENT_TYPES = new Set(["general-purpose", "Explore"]);
  * Deep per-role/per-field merge of the `roles` blocks from the config layers (lowest→highest). Pure.
  * @returns {Object<string, {model?:string, effort?:string, worktree?:boolean, subagentType?:string}>}
  */
-export function mergeRoles(baseRoles, installRoles, projectRoles) {
-  const layers = [baseRoles, installRoles, projectRoles].map((r) => (r && typeof r === "object" ? r : {}));
+export function mergeRoles(...layers) {
+  const norm = layers.map((r) => (r && typeof r === "object" ? r : {}));
   const out = {};
-  for (const layer of layers) {
+  for (const layer of norm) {
     for (const [role, entry] of Object.entries(layer)) {
       if (entry && typeof entry === "object") out[role] = { ...(out[role] ?? {}), ...entry };
     }
@@ -308,7 +308,19 @@ export function loadRoleOverrides(opts = {}) {
   const base = readJsonOr(join(configDir, "board.example.json")).roles;
   const install = readJsonOr(join(configDir, "board.json")).roles;
   const project = readJsonOr(join(cwd, ".yarradev", "board.json")).roles;
-  const { cleaned, warnings } = sanitizeRoles(mergeRoles(base, install, project));
+  // §7: per-role model/effort from the live board config (GET /config), injected by pass.mjs into the
+  // dispatch env. Highest precedence: board config → project → install → example. Malformed => ignored.
+  let boardCfg = {};
+  const rawBoardRoles = process.env.YARRADEV_BOARD_ROLES;
+  if (rawBoardRoles) {
+    try {
+      const parsed = JSON.parse(rawBoardRoles);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) boardCfg = parsed;
+    } catch {
+      /* best-effort — a malformed env layer must never break dispatch */
+    }
+  }
+  const { cleaned, warnings } = sanitizeRoles(mergeRoles(base, install, project, boardCfg));
   for (const w of warnings) process.stderr.write(`dispatch.mjs: ${w}\n`);
   return cleaned;
 }
