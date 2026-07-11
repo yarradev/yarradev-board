@@ -236,6 +236,58 @@ test("reconcile: re-CLAIM 409 (card moved on) → skipped + consumed, no act pos
   assert.equal(results[0].outcome, "skipped");
 });
 
+// ---- reconcile #81: gen-exempt advisor verdicts must NOT re-CLAIM (clean-card livelock) ------------
+// advice/clean/veto/hold are gen-exempt board acts — their routeVerdict branches post via advice/veto/
+// hold.mjs using only id / verdict.head / ctx.role, never ctx.gen, and the reshape-dispatched advisor holds
+// no lease of its own. Reconcile must route them WITHOUT resolving a gen. Before the fix it re-CLAIMed,
+// which 409-collided with the card's ACTIVE lease (the test-stage owner) and DROPPED the verdict as "stale"
+// → the clean review never landed → advisor_clear never cleared → tester+reviewer re-dispatch forever.
+
+async function runAdvisorReconcile({ status, head = "H", reason, role = "code-reviewer", claimResult = { ok: false, status: 409 }, current_gen = 16, recorded = null }) {
+  const calls = [];
+  const results = await reconcileVerdicts({
+    manifestContent: JSON.stringify({ status: "done", cardId: "card-sec-10", verdictPath: "/v/1", role, completedAt: "2026-07-11T10:00:00Z" }),
+    consumedContent: "",
+    contextContent: "",
+    lifecycle: {},
+    machine: { transitions: [] },
+    run: async (script, args) => {
+      calls.push({ script, args });
+      if (script === "claim.mjs") return claimResult;
+      return { ok: true };
+    },
+    getCard: async () => ({ id: "card-sec-10", current_gen }),
+    readVerdict: async () => "```json\n" + JSON.stringify({ status, head, ...(reason ? { reason } : {}) }) + "\n```",
+    readContext: async () => recorded,
+    appendConsumed: async () => {},
+    dispatch: async () => {},
+    buildAdvisorPrompt: async () => "",
+    logger: () => {},
+  });
+  return { calls, results };
+}
+
+test("reconcile #81: clean advisor verdict + no context + lease 409 → routes advice.mjs, NO claim, NO clear-lease", async () => {
+  const { calls, results } = await runAdvisorReconcile({ status: "clean" });
+  const scripts = calls.map((c) => c.script);
+  assert.ok(!scripts.includes("claim.mjs"), "must NOT re-CLAIM a gen-exempt advisor verdict (the #81 409-collision that drops it)");
+  assert.ok(!scripts.includes("clear-lease.mjs"), "must NOT clear a lease it never held (the tester owns the active lease)");
+  const advice = calls.find((c) => c.script === "advice.mjs");
+  assert.ok(advice, "the clean review MUST be posted via advice.mjs (this is what clears advisor_clear)");
+  assert.deepEqual(advice.args, ["card-sec-10", "H", "--role", "code-reviewer"], "advice.mjs [id, head, --role, role] — the gen-exempt contract");
+  assert.equal(results[0].outcome, "routed", "must be routed, NOT skipped");
+});
+
+test("reconcile #81: veto advisor verdict is likewise gen-exempt → veto.mjs, no claim", async () => {
+  const { calls, results } = await runAdvisorReconcile({ status: "veto", reason: "unsafe eval", role: "security-advisor" });
+  const scripts = calls.map((c) => c.script);
+  assert.ok(!scripts.includes("claim.mjs"), "veto is gen-exempt — no re-CLAIM");
+  const veto = calls.find((c) => c.script === "veto.mjs");
+  assert.ok(veto, "veto verdict must post via veto.mjs");
+  assert.deepEqual(veto.args, ["card-sec-10", "H", "unsafe eval"], "veto.mjs [id, head, reason] — no --role, no gen");
+  assert.equal(results[0].outcome, "routed");
+});
+
 // ---- parseErrorEnvelope (#44: distinguish a gateway outage from a card stall) -----------------------
 
 test("parseErrorEnvelope: bare dispatcher error line → parsed", () => {
