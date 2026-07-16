@@ -22,7 +22,7 @@
  * The file contains NO board token: the helper uses the token only for the getEnriched fetch and writes
  * only card data. (dispatch-and-wait.mjs additionally strips YDB_TOKEN* from the subagent env, GH #25.)
  */
-import { makeClient, loadConfig } from "./plugin-io.mjs";
+import { makeClient, loadConfig, resolveLifecycle } from "./plugin-io.mjs";
 import { writeFileSync, readFileSync } from "node:fs";
 
 /** Render a single note defensively — note.mjs posts data:{text}, but tolerate a raw string or other shape. */
@@ -47,6 +47,19 @@ function noteBody(n) {
  */
 export function modeForGate(gate) {
   return gate === "mechanical" ? "mechanical" : "judgement";
+}
+
+/**
+ * Derive the stage-driven `to`/`mode` defaults for a card's current state (issue #83: `lifecycle` may
+ * be either the board-served machine.lifecycle or the local cfg.lifecycle — resolveLifecycle() in
+ * plugin-io.mjs picks which; this helper doesn't care which one it's given).
+ * @param {object|null|undefined} lifecycle
+ * @param {string|undefined} state
+ * @returns {{to: string|undefined, mode: "mechanical"|"judgement"}}
+ */
+export function stageDefaultsFor(lifecycle, state) {
+  const stage = lifecycle?.[state];
+  return { to: stage?.to, mode: modeForGate(stage?.gate) };
 }
 
 /**
@@ -102,12 +115,17 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     process.exit(2);
   }
   const cfg = loadConfig();
-  const card = await makeClient({ role: "orchestrator" }).getEnriched(cardId);
-  const stage = cfg.lifecycle?.[card?.state];
-  const to = opts.to ?? stage?.to;
+  const client = makeClient({ role: "orchestrator" });
+  const card = await client.getEnriched(cardId);
+  // issue #83: the board-served machine.lifecycle (nodes-authored boards) wins over cfg.lifecycle when
+  // present; fail-open on a GET /config error (a human running this manually shouldn't be blocked by it).
+  const machine = await client.getMachine().catch(() => null);
+  const lifecycle = resolveLifecycle(machine, cfg);
+  const stageDefaults = stageDefaultsFor(lifecycle, card?.state);
+  const to = opts.to ?? stageDefaults.to;
   // Derive `mode` from the stage's gate (GH #73) so mechanical dev cards get `gh pr create`; an explicit
   // --mode overrides (e.g. a respawn or a caller that already knows the mode).
-  const mode = opts.mode ?? modeForGate(stage?.gate);
+  const mode = opts.mode ?? stageDefaults.mode;
   const extras = opts.extrasFile ? readFileSync(opts.extrasFile, "utf8") : undefined;
   const out = opts.out ?? `/tmp/yarradev-prompt-${cardId}.txt`;
   writeFileSync(out, composePrompt({ role, card, doName: cfg.doName, to, mode, extras }));

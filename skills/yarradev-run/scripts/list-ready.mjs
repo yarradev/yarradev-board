@@ -20,7 +20,7 @@
  * longer match what the board actually enforces.
  */
 import { decide, assertLifecycleCoherent } from "./vendor/core.mjs";
-import { makeClient, loadConfig } from "./plugin-io.mjs";
+import { makeClient, loadConfig, resolveLifecycle } from "./plugin-io.mjs";
 import { existsSync, readFileSync } from "node:fs";
 import { inFlightCardIds } from "./in-flight.mjs";
 import { manifestPath as resolveManifestPath } from "./runner/paths.mjs";
@@ -60,6 +60,9 @@ const now = Date.now();
 // Fail closed on ANY machine-fetch/coherence problem: getMachine() returns null on an HTTP error
 // (non-2xx → no active config / 5xx), but a transport failure (DNS, connection refused, TLS) makes
 // fetch REJECT — catch that too so it produces the same clean refuse-to-route line, not a raw stack trace.
+// `lifecycle` defaults to cfg.lifecycle and is upgraded below to the board-served machine.lifecycle
+// when present (issue #83, nodes-authored boards) — acme:main serves none today, so this is a no-op there.
+let lifecycle = cfg.lifecycle;
 try {
   const machine = await client.getMachine();
   if (!machine) {
@@ -67,6 +70,7 @@ try {
     process.exit(1);
   }
   assertLifecycleCoherent(cfg.lifecycle, machine);
+  lifecycle = resolveLifecycle(machine, cfg);
 } catch (e) {
   process.stderr.write(`list-ready: refusing to route — ${e.message}\n`);
   process.exit(1);
@@ -133,7 +137,7 @@ try {
 
 // Phase 3: route each card through decide() in priority order
 for (const card of sorted) {
-  const a = decide(card, cfg.lifecycle, policy, now);
+  const a = decide(card, lifecycle, policy, now);
   if (a.kind === "noop") {
     process.stderr.write(`skip ${card.id} (${card.state}): ${a.reason}\n`);
     continue;

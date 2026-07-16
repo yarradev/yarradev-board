@@ -73,6 +73,19 @@ export function validateLoadedConfig(cfg) {
   return assertSafeCommandFields(cfg);
 }
 
+/**
+ * Which lifecycle a script routes/prompts against (issue #83): the board-served machine.lifecycle
+ * when GET /config serves one (nodes-authored boards, compiled from the board's DAG), else this
+ * project's local .yarradev/board.json lifecycle. acme:main (and any board that serves no lifecycle)
+ * falls through to cfg.lifecycle unchanged.
+ * @param {{lifecycle?: object}|null|undefined} machine
+ * @param {{lifecycle: object}} cfg
+ * @returns {object}
+ */
+export function resolveLifecycle(machine, cfg) {
+  return machine?.lifecycle ?? cfg.lifecycle;
+}
+
 export function requireToken(tok) {
   const t = tok ?? process.env.YDB_TOKEN;
   if (!t) throw new Error("YDB_TOKEN is not set (board bearer token, shaped <token_id>.<secret>)");
