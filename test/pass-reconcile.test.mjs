@@ -526,3 +526,24 @@ test("isLeaselessAdvisorRole: advisor-only → true; owns a stage (even while ad
   assert.equal(isLeaselessAdvisorRole("code-reviewer", {}), false, "empty lifecycle → no carve-out");
   assert.equal(isLeaselessAdvisorRole(null, lc), false);
 });
+
+test("#94: an unroutable verdict reconciles as `unknown_status`, NOT `routed`", async () => {
+  // The false-success path: no acts, no error, no actFailed → the tail's outcome mapping said "routed".
+  // spawnPass tallies "routed" lines into the verdicts count, so a board doing nothing reported healthy
+  // throughput. The outcome must name what happened.
+  const { results, calls } = await runReconcile({
+    current_gen: 7,
+    recorded: { gen: 7, kind: "work", to: "test", state: "dev", role: "developer" },
+    verdictText: '```json\n{"status":"aproved","to":"test"}\n```',
+  });
+  assert.equal(results[0].outcome, "unknown_status", "must not masquerade as routed");
+  assert.equal(results[0].unknownStatus, "aproved");
+  assert.ok(calls.some((c) => c.script === "escalate.mjs"), "parks for a human rather than looping");
+  assert.ok(calls.some((c) => c.script === "clear-lease.mjs"), "the worker's lease is still released");
+});
+
+test("#94: a normal advance still reconciles as `routed`", async () => {
+  const { results } = await runReconcile({ current_gen: 7, recorded: { gen: 7, kind: "work", to: "test", role: "developer" } });
+  assert.equal(results[0].outcome, "routed");
+  assert.equal("unknownStatus" in results[0], false);
+});
