@@ -281,6 +281,21 @@ function isBounceBudget(r) {
  * @param {function} [opts.buildAdvisorPrompt] (ctx, advisorRole) => promptFilePath (the 422 async dispatch)
  * @returns {Promise<{acts: Array<{script,args,result}>, dispatches: Array<{role,cardId,promptFile}>, advisorClear422: boolean, spawnDeferred: number, error?: Error}>}
  */
+
+/**
+ * #92: escalation text for a `question` verdict that carries no question. Names the role, stage, and the
+ * gen/head it was produced at, so the park a human lands on says WHY it exists — the old fallback was the
+ * bare word "question", which blocks the card (ASK → blocked=true, and `not_blocked` is a gate predicate)
+ * while giving the human nothing to answer.
+ */
+export function malformedQuestionReason(ctx = {}, verdict = {}) {
+  const where = `${ctx.role ?? "unknown-role"}@${ctx.state ?? "unknown-state"}`;
+  const at = [ctx.gen != null ? `gen ${ctx.gen}` : null, verdict.head ?? ctx.head ? `head ${verdict.head ?? ctx.head}` : null]
+    .filter(Boolean)
+    .join(", ");
+  return `${where} returned status:"question" with no reason or question field (malformed verdict${at ? ` at ${at}` : ""})`;
+}
+
 export async function routeVerdict({
   verdict,
   ctx,
@@ -445,7 +460,15 @@ export async function routeVerdict({
 
     // ---- question → escalate (park for a human) ------------------------------
     if (status === "question") {
-      const reason = verdict.reason ?? verdict.question ?? "question";
+      // #92: the old fallback was the bare string "question", which minted an escalation with no content.
+      // ASK sets blocked=true and `not_blocked` is a gate predicate, so the card was held by a question that
+      // asked nothing — unanswerable on its merits and clearable only by fiat. (Live: 9a120b8d on
+      // yarrasys:yarradev sat at spec behind a complete designer plan with not_blocked its ONLY failing
+      // predicate.) A reasonless `question` is a MISBEHAVING agent, so we still park it — declining to park
+      // would just re-dispatch the card next pass and risk a dispatch→question→re-dispatch livelock — but
+      // the text now names what happened so the human can clear it on an informed basis.
+      const given = [verdict.reason, verdict.question].find((x) => typeof x === "string" && x !== "");
+      const reason = given ?? malformedQuestionReason(ctx, verdict);
       await call("escalate.mjs", [id, reason]);
       return { acts, dispatches, advisorClear422, spawnDeferred };
     }

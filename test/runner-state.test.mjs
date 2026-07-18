@@ -22,3 +22,27 @@ test("buildStatus shapes the /status payload", () => {
   assert.equal(s.breaker, "CLOSED");
   assert.equal(s.nextTickInS, 240);
 });
+
+test("#91: buildStatus surfaces lastTick.error instead of dropping it", () => {
+  // The daemon recorded the reason and buildStatus omitted it — one field away, and hidden. A throwing
+  // or failing pass surfaced as { atS, ok:false } with no way to tell why from `status`, which is the
+  // first thing anyone checks.
+  const now = Date.now();
+  const s = buildStatus({
+    paused: false,
+    intervalMs: 300_000,
+    lastTick: { at: now - 60_000, ok: false, error: "exit 1: API Error: 429 [1310][Weekly/Monthly Limit Exhausted]" },
+    nextTickAt: now + 240_000,
+    breaker: "OPEN",
+    passRunning: false,
+    now,
+  });
+  assert.equal(s.lastTick.ok, false);
+  assert.match(s.lastTick.error, /Weekly\/Monthly Limit Exhausted/);
+});
+
+test("#91: buildStatus omits the error key entirely on a healthy tick", () => {
+  const now = Date.now();
+  const s = buildStatus({ paused: false, intervalMs: 300_000, lastTick: { at: now, ok: true }, nextTickAt: now, breaker: "CLOSED", passRunning: false, now });
+  assert.equal("error" in s.lastTick, false);
+});
