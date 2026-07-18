@@ -310,6 +310,27 @@ export const ROUTABLE_STATUSES = new Set([
 ]);
 
 /**
+ * #97: the human-readable rationale an agent attached to its verdict, read from EVERY field the shipped
+ * agent docs tell it to use. The docs and this reader are two copies of one contract, and nothing tied
+ * them together: four agent docs put a question in `summary` while the question branch read
+ * `reason ?? question`, so every question from analyst/designer/developer/releaser was silently dropped
+ * and parked as content-free (that — not a misbehaving agent — was the true cause of #92).
+ *
+ * Distinct values are JOINED rather than picked, so a doc that populates two fields with different
+ * content (devops sends both `reason` detail and a `summary` one-liner on advice) loses neither.
+ * test/agent-contract-conformance.test.mjs enforces the agreement mechanically, by driving routeVerdict
+ * with every example in agents/*.md and asserting each declared field reaches an act.
+ */
+export function verdictRationale(verdict, fields = ["reason", "summary"]) {
+  const seen = [];
+  for (const f of fields) {
+    const v = verdict?.[f];
+    if (typeof v === "string" && v !== "" && !seen.includes(v)) seen.push(v);
+  }
+  return seen.join(" — ");
+}
+
+/**
  * #94: the payload each status's routeVerdict branch actually dereferences. A verdict can parse, carry a
  * routable status, and still be unusable — and dispatching the act anyway meant the act script rejected
  * its own arguments (exit 2), which reconcile then RETRIED every pass forever. Validate first, park once.
@@ -449,12 +470,26 @@ export async function routeVerdict({
 
     // ---- reject (worker carries `to`; advisor omits it → conductor derives) ---
     if (status === "reject") {
+      // #97: REJECT itself carries no reason — reject.mjs posts data:{to} and the board has no reason
+      // field on the act. Five agent docs nonetheless instruct a rationale (`summary`, or `reason` for
+      // code-reviewer), and ALL of it was dropped: a card bounced backward with no explanation, so the
+      // stage receiving it back saw a state change and nothing else. That defeats #18's forward-context
+      // goal on the one path where the rationale IS the point — a reject exists to say what to fix.
+      // Recorded as a NOTE (gen-exempt, same mechanism the advance branch already uses), and only after
+      // the REJECT actually lands: no note for a bounce the board refused.
+      const rationale = verdictRationale(verdict, ["reason", "summary"]);
+      const noteRejection = async (to) => {
+        if (rationale !== "") await call("note.mjs", [id, `[${ctx.role} rejected → ${to}] ${rationale}`]);
+      };
+
       if (verdict.to != null) {
         // worker reject — backward edge from the verdict, posted under the stage owner.
         const r = await call("reject.mjs", [id, gen, verdict.to, ctx.role]);
         if (r && !r.ok) {
           if (isBounceBudget(r)) await call("escalate.mjs", [id, `bounce budget: ${ctx.state}→${verdict.to}`]);
           else await failActMaybePark("reject.mjs", r, `reject act failed (${ctx.state}→${verdict.to}): ${r?.reason ?? r?.outcome ?? "no detail"}`); // #65: transient → retry, not park
+        } else if (r && r.ok) {
+          await noteRejection(verdict.to);
         }
       } else {
         // advisor reject — derive the single backward edge from the compiled machine.
@@ -464,6 +499,8 @@ export async function routeVerdict({
           if (r && !r.ok) {
             if (isBounceBudget(r)) await call("escalate.mjs", [id, `bounce budget: ${ctx.state}→${derivedTo}`]);
             else await failActMaybePark("reject.mjs", r, `advisor reject act failed (${ctx.state}→${derivedTo}): ${r?.reason ?? r?.outcome ?? "no detail"}`); // #65: transient → retry, not park
+          } else if (r && r.ok) {
+            await noteRejection(derivedTo);
           }
         } else {
           // 0 or >1 REJECT edges → ambiguous; never guess.
@@ -488,6 +525,11 @@ export async function routeVerdict({
         // against that row) is pointless — skip it (#65 tidy-up). Next pass re-derives + retries the submit.
         return { acts, dispatches, advisorClear422, spawnDeferred, actFailed };
       }
+      // #97: developer.md's submitted verdict declares a `summary` ("<one line>") that reached no act —
+      // the reviewer opening the card next saw a PR link and no statement of what was built. Same NOTE
+      // mechanism as advance/reject.
+      const submitRationale = verdictRationale(verdict, ["summary", "reason"]);
+      if (submitRationale !== "") await call("note.mjs", [id, `[${ctx.role} submitted] ${submitRationale}`]);
       // Recover stranded CI (GH #21) — CI completion often lands before LINK_PR creates the row.
       await call("reattach-ci.mjs", [id, repo, pr, head]); // best-effort CI recovery — never escalate
       return { acts, dispatches, advisorClear422, spawnDeferred, actFailed };
@@ -517,6 +559,14 @@ export async function routeVerdict({
       }
       if (allCreated) {
         const mvr = await call("move.mjs", [id, gen, ctx.to, ctx.role]); // advance the epic to the barrier stage
+        // #97: analyst.md's decomposed verdict declares a `summary` (why it split the epic this way) that
+        // reached no act. Recorded on the epic once the barrier advance lands, same as every other branch.
+        if (mvr && mvr.ok) {
+          const decomposeRationale = verdictRationale(verdict, ["summary", "reason"]);
+          if (decomposeRationale !== "") {
+            await call("note.mjs", [id, `[${ctx.role} decomposed → ${ctx.to}] ${decomposeRationale}`]);
+          }
+        }
         if (!(mvr && mvr.ok)) {
           // GH #54: children were minted but the epic can't reach the barrier stage → inconsistent half-state.
           // Surface AND escalate (loud board signal), not a silent retry.
@@ -535,8 +585,10 @@ export async function routeVerdict({
       // predicate.) A reasonless `question` is a MISBEHAVING agent, so we still park it — declining to park
       // would just re-dispatch the card next pass and risk a dispatch→question→re-dispatch livelock — but
       // the text now names what happened so the human can clear it on an informed basis.
-      const given = [verdict.reason, verdict.question].find((x) => typeof x === "string" && x !== "");
-      const reason = given ?? malformedQuestionReason(ctx, verdict);
+      // #97: `summary` is what agents/{analyst,designer,developer,releaser}.md actually instruct — reading
+      // only reason/question is what made every one of those questions park content-free.
+      const given = verdictRationale(verdict, ["reason", "question", "summary"]);
+      const reason = given !== "" ? given : malformedQuestionReason(ctx, verdict);
       await call("escalate.mjs", [id, reason]);
       return { acts, dispatches, advisorClear422, spawnDeferred };
     }
@@ -550,7 +602,10 @@ export async function routeVerdict({
     if (status === "advice" || status === "clean") {
       const role = ctx.role; // THIS pass's dispatched advisor role (NOT default security-advisor)
       const adviceArgs = [id, verdict.head];
-      if (verdict.reason != null && verdict.reason !== "") adviceArgs.push(verdict.reason);
+      // #97: devops.md sends `summary` (clean) and both `reason` + `summary` (advice); reading only
+      // `reason` filed its clean reviews with an empty rationale and dropped its one-liner.
+      const adviceReason = verdictRationale(verdict, ["reason", "summary"]);
+      if (adviceReason !== "") adviceArgs.push(adviceReason);
       adviceArgs.push("--role", role);
       const adv = await call("advice.mjs", adviceArgs); // records a CLEAN review → advisor_clear goes non-vacuous
       // GH #85: this act is THE thing that clears advisor_clear — an unchecked failure here was silently

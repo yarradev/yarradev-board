@@ -519,6 +519,12 @@ If you are **not** in an interactive session with an `Agent` tool (headless/cron
           **Advisor verdict** rule above — `advice`/`clean` → `advice.mjs` (NOT "log only" — that was the
           clean-card livelock), `veto`/`hold` → `veto.mjs`/`hold.mjs`, `reject` → the **REJECT routing**
           rule below. A stage with no configured advisor skips this bullet entirely.
+      - **Rationale is never dropped (GH #97):** every verdict's human-readable rationale — whichever of
+        `reason` / `summary` / `question` the role's agent doc tells it to send — is recorded. `advance`
+        and `decomposed` and `submitted` and a successful `reject` persist it as a `NOTE` (so the next
+        owner, or the stage a card bounced back to, reads *why*); `question` uses it as the escalation
+        text; `advice`/`clean` use it as the ADVICE reason. `test/agent-contract-conformance.test.mjs`
+        enforces this by driving every example in `agents/*.md` through `routeVerdict`.
       - `status:"question"` → `node $S/escalate.mjs <id> "<the question>"` (park for a human).
         The verdict **must** carry the question text in `reason` (or `question`) — an ASK sets
         `blocked=true` and `not_blocked` is a gate predicate, so a question with no text blocks the
