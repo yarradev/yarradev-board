@@ -547,3 +547,33 @@ test("#94: a normal advance still reconciles as `routed`", async () => {
   assert.equal(results[0].outcome, "routed");
   assert.equal("unknownStatus" in results[0], false);
 });
+
+test("#100: a gate-blocked advance reconciles as `gate_blocked` — no ESCALATE, card stays drivable", async () => {
+  // The whole point: the card must remain visible to list-ready so its stage owner is re-dispatched and
+  // can produce the missing evidence. A park removed it from the loop permanently — and because
+  // `not_blocked` is itself a gate predicate, the park added a second failing predicate on the way out.
+  const calls = [];
+  const results = await reconcileVerdicts({
+    manifestContent: JSON.stringify({ status: "done", cardId: "c1", verdictPath: "/v/1", role: "tester" }),
+    consumedContent: "",
+    contextContent: "",
+    lifecycle: {},
+    machine: { transitions: [] },
+    run: async (script, args) => {
+      calls.push(script);
+      if (script === "move.mjs") return { ok: false, status: 422, outcome: "gate_blocked", blocked_by: ["tests_green"] };
+      return { ok: true };
+    },
+    getCard: async () => ({ id: "c1", current_gen: 5, state: "test" }),
+    readVerdict: async () => '```json\n{"status":"advance"}\n```',
+    readContext: async () => ({ gen: 5, state: "test", to: "done", role: "tester", kind: "work" }),
+    appendConsumed: async () => {},
+    dispatch: async () => {},
+    buildAdvisorPrompt: async () => "",
+    logger: () => {},
+  });
+  assert.equal(results[0].outcome, "gate_blocked", "distinct from routed (didn't advance) and act_failed (nothing failed)");
+  assert.deepEqual(results[0].gateBlocked, ["tests_green"], "the failing predicate is surfaced for diagnosis");
+  assert.ok(!calls.includes("escalate.mjs"), "must NOT park — that is what made this self-sustaining");
+  assert.ok(calls.includes("clear-lease.mjs"), "lease released so the next pass can re-dispatch the owner");
+});

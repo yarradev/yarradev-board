@@ -50,7 +50,9 @@ test("#94.2: isTransientActFailure — bad_invocation is DETERMINISTIC (park), e
     "a script that rejected its arguments will reject them identically forever — retrying is a livelock");
   assert.equal(isTransientActFailure({ ok: false, status: null, outcome: "error" }), true,
     "a real crash/network throw stays transient");
-  assert.equal(isTransientActFailure({ outcome: "gate_blocked", status: 422 }), false);
+  // #100 revised this one: gate_blocked is control flow, not a failure — never park on it.
+  assert.equal(isTransientActFailure({ outcome: "gate_blocked", status: 422 }), true);
+  assert.equal(isTransientActFailure({ outcome: "bad_act", status: 422 }), false, "a genuine 422 still parks");
   assert.equal(isTransientActFailure({ outcome: "fenced", status: 409 }), true);
 });
 

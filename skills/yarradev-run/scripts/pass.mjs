@@ -243,6 +243,12 @@ export function isTransientActFailure(result) {
   // #94: a script that rejected its arguments (exit 2) will reject them identically on every retry —
   // deterministic, so park. Checked BEFORE the crash envelope below, which it would otherwise match.
   if (result.outcome === "bad_invocation") return false;
+  // #100: gate_blocked is CONTROL FLOW, not a failure. The board is reporting "this gate is not satisfied
+  // YET" — the normal state of a card whose evidence hasn't been produced. It may well be satisfied next
+  // pass (CI lands, a review clears, a child finishes), so never park on it: parking made every transient
+  // condition terminal (a single CI flake became permanent) AND unrecoverable, since a parked card is
+  // skipped by list-ready and can never be re-driven to produce the evidence.
+  if (result.outcome === "gate_blocked") return true;
   if (result.outcome === "error") return true; // makeRun's crash/no-JSON envelope (network throw / spawn fail)
   const s = Number(result.status);
   if (Number.isNaN(s)) return false; // unknown shape → deterministic (safe default: park)
@@ -387,6 +393,7 @@ export async function routeVerdict({
   let advisorClear422 = false;
   let spawnDeferred = 0;
   let actFailed = null;
+  let gateBlocked = null; // #100: the failing gate predicates, when a MOVE was blocked rather than failed
 
   /** Call an act script via the injected `run` and record the invocation (the parity record assertions read). */
   const call = async (script, args) => {
@@ -463,9 +470,21 @@ export async function routeVerdict({
       // GH #54: an unhandled MOVE failure (not ok, not the advisor_clear reshape) must be surfaced, not
       // silently reported as "routed".
       if (!(mv && mv.ok) && !advisorClear422) {
-        await failAct("move.mjs", mv, `advance act failed (${ctx.state}→${ctx.to}): ${mv?.reason ?? mv?.outcome ?? "no detail"}`);
+        // #100: …but `gate_blocked` is NOT such a failure — it is the board correctly reporting that a
+        // gate isn't satisfied yet, which is the normal state of a card that just arrived at a stage.
+        // #54's fix over-caught it, and park-always made the result self-sustaining: the park sets
+        // blocked=true, `not_blocked` is itself a gate predicate, list-ready skips parked cards, so the
+        // stage owner is never dispatched and the missing evidence can never be produced — a human
+        // answering the question lands straight back here. Surface it (naming the failing predicates, so
+        // an unsatisfiable gate is diagnosable) and let decide() re-derive next pass, which is exactly
+        // what the comment above always claimed happened.
+        if (mv?.outcome === "gate_blocked") {
+          gateBlocked = Array.isArray(mv.blocked_by) ? mv.blocked_by : [];
+        } else {
+          await failAct("move.mjs", mv, `advance act failed (${ctx.state}→${ctx.to}): ${mv?.reason ?? mv?.outcome ?? "no detail"}`);
+        }
       }
-      return { acts, dispatches, advisorClear422, spawnDeferred, actFailed };
+      return { acts, dispatches, advisorClear422, spawnDeferred, actFailed, ...(gateBlocked ? { gateBlocked } : {}) };
     }
 
     // ---- reject (worker carries `to`; advisor omits it → conductor derives) ---
@@ -568,12 +587,18 @@ export async function routeVerdict({
           }
         }
         if (!(mvr && mvr.ok)) {
-          // GH #54: children were minted but the epic can't reach the barrier stage → inconsistent half-state.
-          // Surface AND escalate (loud board signal), not a silent retry.
-          await failAct("move.mjs", mvr, "decomposed: children created but barrier advance failed");
+          // #100: same carve-out as the advance branch — a barrier gate that isn't satisfied yet (children
+          // still in flight) is control flow, and parking the epic on it would strand the whole
+          // decomposition. A genuine failure here still escalates: children were minted but the epic can't
+          // reach the barrier stage → an inconsistent half-state that needs a loud board signal (GH #54).
+          if (mvr?.outcome === "gate_blocked") {
+            gateBlocked = Array.isArray(mvr.blocked_by) ? mvr.blocked_by : [];
+          } else {
+            await failAct("move.mjs", mvr, "decomposed: children created but barrier advance failed");
+          }
         }
       }
-      return { acts, dispatches, advisorClear422, spawnDeferred, actFailed };
+      return { acts, dispatches, advisorClear422, spawnDeferred, actFailed, ...(gateBlocked ? { gateBlocked } : {}) };
     }
 
     // ---- question → escalate (park for a human) ------------------------------
@@ -1022,6 +1047,12 @@ export async function reconcileVerdicts({
       if (r.malformedVerdict) {
         logger(`[pass] reconcile ${verdictPath}: malformed ${verdict.status} verdict (${r.malformedVerdict}) — parked, card NOT advanced`);
       }
+      if (r.gateBlocked) {
+        // #100: NOT a park — the card stays drivable and decide() re-derives next pass. Named so an
+        // unsatisfiable gate (e.g. tests_green{check:"e2e"} with no such check in CI) is diagnosable
+        // from the log instead of requiring a source read.
+        logger(`[pass] reconcile ${verdictPath}: gate blocked [${r.gateBlocked.join(", ")}] — card NOT advanced, re-derives next pass`);
+      }
       // #94: `unknown_status` is its own outcome — folding it into "routed" is what made an unroutable
       // verdict look like a successful one (and inflated spawnPass's routed-line verdict count).
       results.push({
@@ -1035,10 +1066,13 @@ export async function reconcileVerdicts({
               ? "act_failed"
               : r.unknownStatus
                 ? "unknown_status"
-                : "routed",
+                : r.gateBlocked
+                  ? "gate_blocked" // #100: distinct from routed (the card did NOT advance) and from act_failed (nothing failed)
+                  : "routed",
         advisorClear422: r.advisorClear422,
         state: ctx.state ?? null,
         to: ctx.to ?? null,
+        ...(r.gateBlocked ? { gateBlocked: r.gateBlocked } : {}),
         ...(r.malformedVerdict ? { malformedVerdict: r.malformedVerdict } : {}),
         ...(r.unknownStatus ? { unknownStatus: r.unknownStatus } : {}),
         ...(r.actFailed ? { actFailed: r.actFailed } : {}),
