@@ -243,8 +243,9 @@ test("reconcile: re-CLAIM 409 (card moved on) → skipped + consumed, no act pos
 // which 409-collided with the card's ACTIVE lease (the test-stage owner) and DROPPED the verdict as "stale"
 // → the clean review never landed → advisor_clear never cleared → tester+reviewer re-dispatch forever.
 
-async function runAdvisorReconcile({ status, head = "H", reason, role = "code-reviewer", claimResult = { ok: false, status: 409 }, current_gen = 16, recorded = null }) {
+async function runAdvisorReconcile({ status, head = "H", reason, role = "code-reviewer", claimResult = { ok: false, status: 409 }, current_gen = 16, recorded = null, actResult = { ok: true } }) {
   const calls = [];
+  const consumed = [];
   const results = await reconcileVerdicts({
     manifestContent: JSON.stringify({ status: "done", cardId: "card-sec-10", verdictPath: "/v/1", role, completedAt: "2026-07-11T10:00:00Z" }),
     consumedContent: "",
@@ -254,17 +255,18 @@ async function runAdvisorReconcile({ status, head = "H", reason, role = "code-re
     run: async (script, args) => {
       calls.push({ script, args });
       if (script === "claim.mjs") return claimResult;
+      if (script === "advice.mjs" || script === "veto.mjs" || script === "hold.mjs") return actResult;
       return { ok: true };
     },
     getCard: async () => ({ id: "card-sec-10", current_gen }),
     readVerdict: async () => "```json\n" + JSON.stringify({ status, head, ...(reason ? { reason } : {}) }) + "\n```",
     readContext: async () => recorded,
-    appendConsumed: async () => {},
+    appendConsumed: async (p) => { consumed.push(p); },
     dispatch: async () => {},
     buildAdvisorPrompt: async () => "",
     logger: () => {},
   });
-  return { calls, results };
+  return { calls, results, consumed };
 }
 
 test("reconcile #81: clean advisor verdict + no context + lease 409 → routes advice.mjs, NO claim, NO clear-lease", async () => {
@@ -286,6 +288,70 @@ test("reconcile #81: veto advisor verdict is likewise gen-exempt → veto.mjs, n
   assert.ok(veto, "veto verdict must post via veto.mjs");
   assert.deepEqual(veto.args, ["card-sec-10", "H", "unsafe eval"], "veto.mjs [id, head, reason] — no --role, no gen");
   assert.equal(results[0].outcome, "routed");
+});
+
+// ---- reconcile #85: advisor verdict must not be lost when the advisor HELD a lease -----------------
+// #81 assumed advisors are always fire-and-forget reshape-dispatched (leaseless). They are not: decide()
+// returns {kind:"work", role: advisorRoleFor(st)} when advisor_clear is failing (vendor/core.mjs:183),
+// which dispatchNew CLAIMs — so the advisor holds a real lease with a gen in the dispatch-context ledger.
+// Routing gen-exempt then skipped CLEAR_LEASE, so the lease dangled for the full claimTtlS; decide() sees
+// `leased` → noop → the card silently stalls at dev, and the advisor act's failure was never even checked.
+
+test("reconcile #85: advisor that HELD the lease (recorded gen current) → CLEAR_LEASE at that gen, still no re-CLAIM", async () => {
+  const { calls } = await runAdvisorReconcile({
+    status: "advice",
+    role: "security-advisor",
+    recorded: { gen: 5, state: "dev", to: "test", role: "security-advisor", kind: "work" },
+    current_gen: 5, // lease still ours → we hold it → we must release it
+  });
+  const scripts = calls.map((c) => c.script);
+  assert.ok(!scripts.includes("claim.mjs"), "#81 preserved: gen-exempt verdicts never re-CLAIM");
+  assert.ok(scripts.includes("advice.mjs"), "the clean review still posts");
+  const clear = calls.find((c) => c.script === "clear-lease.mjs");
+  assert.ok(clear, "MUST release the advisor's own lease — else it dangles for claimTtlS and decide() noops on `leased` (#85)");
+  assert.deepEqual(clear.args, ["card-sec-10", 5], "clears at the gen the advisor actually holds");
+});
+
+test("reconcile #85: advisor lease already reclaimed (recorded gen stale) → no CLEAR_LEASE (not ours)", async () => {
+  const { calls } = await runAdvisorReconcile({
+    status: "advice",
+    recorded: { gen: 5, state: "dev", to: "test", role: "code-reviewer" },
+    current_gen: 9, // gen moved on — someone else holds the lease now
+  });
+  assert.ok(!calls.some((c) => c.script === "clear-lease.mjs"), "must never clear a lease it no longer holds (would free someone else's)");
+});
+
+test("reconcile #85: a DETERMINISTIC advisor act failure is surfaced + parked, not reported as routed", async () => {
+  const { calls, results, consumed } = await runAdvisorReconcile({
+    status: "advice",
+    actResult: { ok: false, status: 422, outcome: "bad_act", reason: "stale head" },
+  });
+  assert.equal(results[0].outcome, "act_failed", "a failed ADVICE post must NOT be reported as `routed` (#85: it was, so the loss was invisible)");
+  assert.ok(calls.some((c) => c.script === "escalate.mjs"), "deterministic failure never self-heals → park for a human");
+  assert.deepEqual(consumed, ["/v/1"], "deterministic failure is terminal → consume (escalation carries it from here)");
+});
+
+test("reconcile #85: a TRANSIENT advisor act failure retries next pass — verdict NOT consumed, lease NOT released", async () => {
+  const { calls, results, consumed } = await runAdvisorReconcile({
+    status: "advice",
+    recorded: { gen: 5, state: "dev", to: "test", role: "security-advisor" },
+    current_gen: 5,
+    actResult: { ok: false, status: 503, outcome: "error" },
+  });
+  assert.equal(results[0].outcome, "act_failed");
+  assert.deepEqual(consumed, [], "a board blip must NOT burn the verdict — consuming it is what loses the advisor's work forever (#85)");
+  assert.ok(!calls.some((c) => c.script === "escalate.mjs"), "transient → retry, don't park (#65 semantics)");
+  assert.ok(!calls.some((c) => c.script === "clear-lease.mjs"), "hold the lease across the retry so decide() can't race a second advisor dispatch");
+});
+
+test("reconcile #85: veto act failure is surfaced too (binding verdicts must never be silently dropped)", async () => {
+  const { results } = await runAdvisorReconcile({
+    status: "veto",
+    reason: "unsafe eval",
+    role: "security-advisor",
+    actResult: { ok: false, status: 422, outcome: "bad_act" },
+  });
+  assert.equal(results[0].outcome, "act_failed", "a dropped VETO would advance a card the advisor blocked");
 });
 
 // ---- parseErrorEnvelope (#44: distinguish a gateway outage from a card stall) -----------------------

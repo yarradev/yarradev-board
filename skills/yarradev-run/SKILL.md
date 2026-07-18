@@ -144,9 +144,13 @@ Let `S=${CLAUDE_PLUGIN_ROOT}/skills/yarradev-run/scripts`.
 > **headless `yarradev run` daemon ticks on your behalf** (you never invoke it by hand there). It
 > **reconciles** landed verdicts (re-CLAIM at verdict time for **worker** verdicts, so a long subagent's
 > verdict isn't stranded by lease-TTL gen-bumps — fixes #27's recovery gap; **gen-exempt advisor verdicts
-> (`advice`/`clean`/`veto`/`hold`) post directly with no re-CLAIM and no CLEAR_LEASE — #81**, since the
-> reshape-dispatched advisor holds no lease and a re-CLAIM would 409 on the active lease and drop the
-> verdict, the clean-card livelock), **fans out** up to `effectiveK` concurrent dispatches —
+> (`advice`/`clean`/`veto`/`hold`) post directly with no re-CLAIM — #81**, since a re-CLAIM would 409 on the
+> active lease and drop the verdict, the clean-card livelock. It **does** CLEAR_LEASE when the advisor
+> actually held one — an advisor is only leaseless on the 422-reshape path; `decide()` also dispatches an
+> advisor as `kind:"work"` when `advisor_clear` fails, and `dispatchNew` CLAIMs that role-blind, so the
+> ledger carries a gen. Leaving it dangling stalls the card for the full `claimTtlS` (`decide()` noops on
+> `leased`) — **#85**. A failed advisor act is surfaced (`act_failed`) and, when transient, leaves the
+> verdict **unconsumed** so the next pass re-posts it rather than losing the advisor's work), **fans out** up to `effectiveK` concurrent dispatches —
 > `min(pace.maxCardsPerPass, pace.maxConcurrent − in-flight)`, dropped to 0/1 by the 529 circuit breaker
 > (#28), routes every verdict with full parity, and writes the `epic_done` signal. It is a **pure
 > reconcile → dispatch → exit per invocation** — there is no context-pressure check and no pass counter;
