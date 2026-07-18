@@ -30,7 +30,11 @@ test("isTransientActFailure: network/429/5xx/409 → transient; 422/403/unknown 
   assert.equal(isTransientActFailure({ status: 422, outcome: "bad_act" }), false);
   assert.equal(isTransientActFailure({ status: 403, outcome: "unauthorized" }), false);
   assert.equal(isTransientActFailure({ status: 400 }), false);
-  assert.equal(isTransientActFailure({ outcome: "gate_blocked" }), false); // no status → safe default: park
+  // #100: gate_blocked is CONTROL FLOW, not a failure — the gate may well be satisfied next pass (CI lands,
+  // a review clears, a child finishes). Parking on it turned every transient condition terminal: on the
+  // live board, 3 CI flakes and 3 tripped constant-guards — all self-healable — became permanent parks.
+  assert.equal(isTransientActFailure({ outcome: "gate_blocked", status: 422 }), true);
+  assert.equal(isTransientActFailure({ outcome: "gate_blocked" }), true); // no status → still control flow
 });
 
 // ---- mock factories -------------------------------------------------------------
@@ -74,6 +78,7 @@ async function route({ verdict, ctx, overrides = {} }) {
     dispatches: result.dispatches,
     advisorClear422: result.advisorClear422,
     actFailed: result.actFailed ?? null,
+    gateBlocked: result.gateBlocked, // #100
     raw: result,
   };
 }
@@ -519,11 +524,15 @@ test("routeVerdict: MOVE 422 advisor_clear → fire-and-forget advisor dispatch,
   assert.equal(advisorClear422, true);
 });
 
-test("routeVerdict: MOVE 422 with a NON-advisor_clear blocked_by → ordinary failure path (no advisor dispatch), escalates (#58)", async () => {
-  // Only advisor_clear triggers the async advisor reshape; any other predicate is an ordinary gate block
-  // (CLEAR_LEASE; decide re-derives next pass) — no dispatch, but it IS now a load-bearing act failure:
-  // surfaced (actFailed) AND escalated (parked), so it can't loop forever silently (#58).
-  const { acts, dispatches, advisorClear422, actFailed } = await route({
+test("#100: MOVE 422 with a NON-advisor_clear blocked_by → ordinary control flow, NOT a park", async () => {
+  // #100 (was #58, which over-caught): `gate_blocked` is the board correctly reporting "this gate is not
+  // satisfied yet" — the NORMAL state of a card that just arrived at a stage whose evidence doesn't exist
+  // yet. Parking on it was self-sustaining and human-proof: the park sets blocked=true, `not_blocked` is
+  // itself a gate predicate, list-ready skips parked cards, so the stage owner is never dispatched and the
+  // missing evidence can never be produced. Answering the question returns to the same state.
+  // Live: 7 of 7 cards at `test` on yarrasys:yarradev, and 6 red-CI PRs (3 flakes, 3 tripped guards, zero
+  // product bugs) that could all have self-healed but couldn't, because parked cards are never re-driven.
+  const { acts, dispatches, advisorClear422, actFailed, gateBlocked } = await route({
     verdict: { status: "advance" },
     ctx: { id: "c1", state: "dev", role: "developer", to: "test", gen: 3, kind: "work" },
     overrides: {
@@ -532,13 +541,71 @@ test("routeVerdict: MOVE 422 with a NON-advisor_clear blocked_by → ordinary fa
       }),
     },
   });
-  assert.deepEqual(acts, [
-    ["move.mjs", ["c1", 3, "test", "developer"]],
-    ["escalate.mjs", ["c1", "advance act failed (dev→test): gate_blocked"]],
-  ]);
+  assert.deepEqual(acts, [["move.mjs", ["c1", 3, "test", "developer"]]], "no ESCALATE — the card must stay drivable");
   assert.deepEqual(dispatches, [], "non-advisor_clear 422 does NOT dispatch an advisor");
   assert.equal(advisorClear422, false);
-  assert.ok(actFailed, "act failure surfaced");
+  assert.ok(!actFailed, "a gate that isn't satisfied yet is not an act failure");
+  assert.deepEqual(gateBlocked, ["ci_green"], "…but it IS surfaced, naming the failing predicate (#54's real concern)");
+});
+
+test("#100: a genuine MOVE failure (bad_act / unauthorized) still parks", async () => {
+  // The carve-out is for gate_blocked ONLY. #54's concern — an unhandled MOVE failure silently reported as
+  // routed — remains addressed for the failures that actually are failures.
+  const { acts, actFailed, gateBlocked } = await route({
+    verdict: { status: "advance" },
+    ctx: { id: "c1", state: "dev", role: "developer", to: "test", gen: 3, kind: "work" },
+    overrides: {
+      run: makeRun({ "move.mjs": { ok: false, status: 422, outcome: "bad_act", reason: "bad transition" } }),
+    },
+  });
+  assert.equal(acts[1][0], "escalate.mjs", "a real act failure still parks");
+  assert.ok(actFailed);
+  assert.equal(gateBlocked, undefined);
+});
+
+test("#100: the failing predicates are named in what the operator sees", async () => {
+  // On the live board the actual cause was tests_green{check:"e2e"} with no such check in CI — obvious from
+  // blocked_by, invisible in "advance act failed … gate blocked". Naming it turns a multi-hour source-read
+  // into a five-minute config fix.
+  const { gateBlocked } = await route({
+    verdict: { status: "advance" },
+    ctx: { id: "c1", state: "test", role: "tester", to: "done", gen: 5, kind: "work" },
+    overrides: {
+      run: makeRun({
+        "move.mjs": { ok: false, status: 422, outcome: "gate_blocked", blocked_by: ["tests_green", "not_blocked"] },
+      }),
+    },
+  });
+  assert.deepEqual(gateBlocked, ["tests_green", "not_blocked"]);
+});
+
+test("#100: a decomposed epic's barrier MOVE gate-block does not park the epic either", async () => {
+  // Same class on the other park-always failAct call site: the children were created, and the barrier gate
+  // simply isn't satisfied yet. Parking the epic here would strand the whole decomposition.
+  const { acts, actFailed, gateBlocked } = await route({
+    verdict: { status: "decomposed", children: [{ title: "Story A" }] },
+    ctx: { id: "epic-1", state: "epic_decompose", role: "analyst", to: "epic_integrating", gen: 2, type: "epic" },
+    overrides: {
+      run: makeRun({
+        "move.mjs": { ok: false, status: 422, outcome: "gate_blocked", blocked_by: ["all_children_terminal"] },
+      }),
+    },
+  });
+  assert.ok(!acts.some((a) => a[0] === "escalate.mjs"), "the epic must stay drivable");
+  assert.ok(!actFailed);
+  assert.deepEqual(gateBlocked, ["all_children_terminal"]);
+});
+
+test("#100: a decomposed CREATE failure still parks (re-decompose duplicate protection is unchanged)", async () => {
+  const { acts, actFailed } = await route({
+    verdict: { status: "decomposed", children: [{ title: "Story A" }] },
+    ctx: { id: "epic-1", state: "epic_decompose", role: "analyst", to: "epic_integrating", gen: 2, type: "epic" },
+    overrides: {
+      run: makeRun({ "create.mjs": { ok: false, status: 422, outcome: "bad_act" } }),
+    },
+  });
+  assert.ok(acts.some((a) => a[0] === "escalate.mjs"), "a partial decomposition must still park");
+  assert.ok(actFailed);
 });
 
 test("routeVerdict: MOVE 422 advisor_clear but state has NO configured advisor → no dispatch (inert)", async () => {
