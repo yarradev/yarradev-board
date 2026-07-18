@@ -9,7 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseLastVerdict, parseErrorEnvelope, nextUnconsumedDone, reconcileVerdicts } from "../skills/yarradev-run/scripts/pass.mjs";
+import { parseLastVerdict, parseErrorEnvelope, nextUnconsumedDone, reconcileVerdicts, isLeaselessAdvisorRole } from "../skills/yarradev-run/scripts/pass.mjs";
 
 // ---- parseLastVerdict -----------------------------------------------------------
 
@@ -409,4 +409,120 @@ test("reconcileVerdicts: routed result carries the dispatch context's state/to (
   assert.equal(results[0].outcome, "routed");
   assert.equal(results[0].state, "dev");
   assert.equal(results[0].to, "test");
+});
+
+// ---- reconcile #87: the fallback CLAIM must never fire under an ADVISOR role -----------------------
+// Follow-up to #85, same wrong premise on a different path. reconcileVerdicts takes `role` straight off
+// the manifest entry; for a reshape-dispatched advisor that is the ADVISOR role. The gen-exempt guard
+// only covers advice/clean/veto/hold, so any OTHER status (question, reject, advance, error, unparseable)
+// fell through to the fallback CLAIM. The reshape path writes no dispatch-context entry (routeVerdict's
+// advance branch calls bare dispatch()), so `recorded` is undefined → the fallback ALWAYS fired, granting
+// a lease + gen bump to an advisor that was dispatched leaseless by design. The bump invalidates the stage
+// owner's in-flight lease — exactly the 409 collision class #81 set out to avoid.
+//
+// The fix resolves the gen by READING the card instead of CLAIMing: gen-required acts fence on
+// `gen === current_gen` only (workers/board/src/storage.ts) with no lease-ownership check, which is the
+// same trick applySyncAction's `promote` already uses. No CLAIM → no lease, no gen bump.
+
+const ADVISOR_LIFECYCLE = {
+  dev: { owner: "developer", to: "test", advisors: [{ role: "code-reviewer" }] },
+  test: { owner: "tester", to: "done" },
+};
+
+async function runReshapeAdvisorReconcile({
+  status,
+  role = "code-reviewer",
+  current_gen = 16,
+  recorded = null,
+  verdictText,
+  lifecycle = ADVISOR_LIFECYCLE,
+}) {
+  const calls = [];
+  const consumed = [];
+  const results = await reconcileVerdicts({
+    manifestContent: JSON.stringify({ status: "done", cardId: "c1", verdictPath: "/v/1", role, completedAt: "2026-07-18T10:00:00Z" }),
+    consumedContent: "",
+    contextContent: "",
+    lifecycle,
+    machine: { transitions: [{ from: "dev", to: "spec", type: "REJECT" }] },
+    run: async (script, args) => {
+      calls.push({ script, args });
+      if (script === "claim.mjs") return { ok: true, gen: current_gen + 1 };
+      return { ok: true };
+    },
+    getCard: async () => ({ id: "c1", current_gen, state: "dev" }),
+    readVerdict: async () => verdictText ?? "```json\n" + JSON.stringify({ status, reason: "unsure" }) + "\n```",
+    readContext: async () => recorded,
+    appendConsumed: async (p) => { consumed.push(p); },
+    dispatch: async () => {},
+    buildAdvisorPrompt: async () => "",
+    logger: () => {},
+  });
+  return { calls, results, consumed };
+}
+
+test("reconcile #87: advisor `question` with no dispatch context → NO CLAIM, NO clear-lease, escalates", async () => {
+  const { calls, consumed } = await runReshapeAdvisorReconcile({ status: "question" });
+  const scripts = calls.map((c) => c.script);
+  assert.ok(!scripts.includes("claim.mjs"), "must NOT CLAIM under an advisor role — the advisor is leaseless by design");
+  assert.ok(!scripts.includes("clear-lease.mjs"), "must NOT clear a lease it never took");
+  assert.ok(scripts.includes("escalate.mjs"), "question still parks the card (ESCALATE is gen-exempt)");
+  assert.deepEqual(consumed, ["/v/1"], "the verdict is processed and consumed");
+});
+
+test("reconcile #87: advisor `reject` with no dispatch context → posts at the READ gen, no CLAIM", async () => {
+  const { calls } = await runReshapeAdvisorReconcile({ status: "reject", current_gen: 16 });
+  assert.ok(!calls.some((c) => c.script === "claim.mjs"), "must not CLAIM");
+  const rej = calls.find((c) => c.script === "reject.mjs");
+  assert.ok(rej, "advisor reject derives the backward edge and posts");
+  assert.deepEqual(rej.args, ["c1", 16, "spec", "code-reviewer"], "posts at the card's CURRENT gen (read, not claimed)");
+});
+
+test("reconcile #87: advisor `error` with no dispatch context → no CLAIM, no acts, consumed", async () => {
+  const { calls, consumed } = await runReshapeAdvisorReconcile({ status: "error" });
+  assert.ok(!calls.some((c) => c.script === "claim.mjs"), "must not CLAIM");
+  assert.ok(!calls.some((c) => c.script === "clear-lease.mjs"), "must not clear a lease it never took");
+  assert.deepEqual(consumed, ["/v/1"]);
+});
+
+test("reconcile #87: unparseable advisor verdict with no dispatch context → no CLAIM, no clear-lease", async () => {
+  const { calls, results } = await runReshapeAdvisorReconcile({ status: "question", verdictText: "no fenced block here" });
+  assert.ok(!calls.some((c) => c.script === "claim.mjs"), "must not CLAIM to process a verdict it cannot parse");
+  assert.ok(!calls.some((c) => c.script === "clear-lease.mjs"), "must not clear a lease it never took");
+  assert.equal(results[0].outcome, "no-parse");
+});
+
+test("reconcile #87: an advisor that DID hold a lease (recorded context, #85) still uses it and clears it", async () => {
+  // decide() dispatches an advisor as {kind:"work"} when advisor_clear is failing, and dispatchNew CLAIMs
+  // that role-blind — so an advisor CAN hold a real lease, recorded in the ledger. The leaseless carve-out
+  // must key off the ABSENT dispatch context, not off the role being an advisor.
+  const { calls } = await runReshapeAdvisorReconcile({
+    status: "question",
+    recorded: { gen: 16, kind: "work", to: "test", state: "dev", role: "code-reviewer" },
+  });
+  const scripts = calls.map((c) => c.script);
+  assert.ok(!scripts.includes("claim.mjs"), "gen still current → no re-CLAIM (#37)");
+  assert.deepEqual(calls.find((c) => c.script === "clear-lease.mjs")?.args, ["c1", 16], "its own lease IS released");
+});
+
+test("reconcile #87: a WORKER with no dispatch context still re-CLAIMs (#27 recovery preserved)", async () => {
+  // The carve-out must not swallow the worker recovery path: a developer whose context write failed still
+  // needs a fresh gen, and its CLAIM is legitimate — it owns the stage.
+  const { calls } = await runReshapeAdvisorReconcile({ status: "question", role: "developer" });
+  assert.ok(calls.some((c) => c.script === "claim.mjs"), "worker recovery still re-CLAIMs");
+});
+
+test("isLeaselessAdvisorRole: advisor-only → true; owns a stage (even while advising elsewhere) → false", () => {
+  const lc = {
+    dev: { owner: "developer", advisors: [{ role: "code-reviewer" }, { role: "tester" }] },
+    test: { owner: "tester" },
+    done: { owner: "releaser", advisors: [{ role: "devops" }] },
+  };
+  assert.equal(isLeaselessAdvisorRole("code-reviewer", lc), true, "advises, owns nothing → leaseless");
+  assert.equal(isLeaselessAdvisorRole("devops", lc), true);
+  assert.equal(isLeaselessAdvisorRole("tester", lc), false, "advises dev but OWNS test → a worker; its CLAIM is legitimate");
+  assert.equal(isLeaselessAdvisorRole("developer", lc), false);
+  assert.equal(isLeaselessAdvisorRole("nobody", lc), false, "unknown role → never carved out (fail-closed)");
+  assert.equal(isLeaselessAdvisorRole("code-reviewer", {}), false, "empty lifecycle → no carve-out");
+  assert.equal(isLeaselessAdvisorRole(null, lc), false);
 });

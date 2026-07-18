@@ -644,6 +644,29 @@ export async function dispatchNew({
 const GEN_EXEMPT_STATUSES = new Set(["advice", "clean", "veto", "hold"]);
 
 /**
+ * #87: is `role` an advisor that owns no stage in this lifecycle? Such a role can only ever have been
+ * reshape-dispatched (routeVerdict's advance branch fires a bare `dispatch()` — no CLAIM, no writeContext),
+ * so with NO recorded dispatch context it holds no lease and has no gen to recover. Re-CLAIMing there would
+ * grant a lease to a leaseless-by-design advisor AND bump current_gen, invalidating the stage owner's
+ * in-flight lease — the same 409 collision class #81 set out to avoid.
+ *
+ * Deliberately narrow on BOTH axes so the worker recovery path (#27) is untouched:
+ *   - a role that owns any stage is a worker, even if it also advises elsewhere → never carved out;
+ *   - the carve-out only applies when the dispatch context is ABSENT. An advisor that WAS dispatched as
+ *     {kind:"work"} by decide() (advisor_clear failing) does hold a real lease recorded in the ledger
+ *     (#85) — that entry keeps the normal gen/lease handling, including its CLEAR_LEASE.
+ */
+export function isLeaselessAdvisorRole(role, lifecycle) {
+  if (!role || !lifecycle || typeof lifecycle !== "object") return false;
+  let isAdvisor = false;
+  for (const stage of Object.values(lifecycle)) {
+    if (stage?.owner === role) return false; // owns a stage → a worker; its CLAIM is legitimate
+    if (Array.isArray(stage?.advisors) && stage.advisors.some((a) => a?.role === role)) isAdvisor = true;
+  }
+  return isAdvisor;
+}
+
+/**
  * For each unconsumed `done` manifest entry: read the verdict, re-CLAIM (fresh gen — recovers verdicts that
  * landed past lease-TTL), route via routeVerdict, CLEAR_LEASE, mark consumed. Best-effort throughout: a
  * single card's failure is caught + logged and does NOT abort the pass.
@@ -749,6 +772,11 @@ export async function reconcileVerdicts({
       // now would 409 on the active lease and leave the card stuck leased for up to claimTtlS. Only re-CLAIM
       // when the original gen is stale (lease expired → bumped) or absent — that's the #27 recovery path.
       let gen;
+      // #87: did WE take (or inherit) a lease on this card? Governs the CLEAR_LEASE calls below — a
+      // reshape-dispatched advisor holds none, and clearing one it never took is a gen-required act that
+      // can only 409 (or, worse, release someone else's).
+      let holdsLease = true;
+      let leaselessState = null;
       const originalGen = recorded?.gen;
       if (originalGen != null) {
         const leaseCard = await getCard(cardId);
@@ -756,7 +784,24 @@ export async function reconcileVerdicts({
           gen = originalGen; // lease active, gen current → use it (no re-CLAIM, no spurious 409)
         }
       }
-      if (gen == null) {
+      if (gen == null && recorded == null && isLeaselessAdvisorRole(role, lifecycle)) {
+        // #87: a reshape-dispatched advisor returning a NON-gen-exempt status (question/reject/advance/
+        // error/unparseable). It holds no lease, so there is no gen to recover — READ the card's gen
+        // instead of CLAIMing for it. Board-side, gen-required acts fence on `gen === current_gen` with no
+        // lease-ownership check (workers/board/src/storage.ts), which is the same trick applySyncAction's
+        // `promote` already relies on. So an advisor REJECT still lands at the observed gen, while ESCALATE
+        // (question) and the no-act statuses never needed one. No CLAIM → no lease, no gen bump, no
+        // collision with the stage owner.
+        const cur = await getCard(cardId);
+        gen = cur?.current_gen ?? null;
+        holdsLease = false;
+        // The reshape path also recorded no state, and routeVerdict's advisor-reject branch derives the
+        // backward edge from it (rejectTargetOf(machine, ctx.state)). Take it from the card we just read —
+        // without it the derive fails and a legitimate advisor reject escalates as "edge ambiguous".
+        if (cur?.state != null) leaselessState = cur.state;
+        logger(`[pass] reconcile ${verdictPath}: leaseless advisor '${role}' (no dispatch context) — routing at read gen ${gen ?? "unknown"}, no CLAIM`);
+      }
+      if (gen == null && holdsLease) {
         const claim = await run("claim.mjs", [cardId, role, ttlS]);
         if (!claim || !claim.ok) {
           const reason =
@@ -779,7 +824,7 @@ export async function reconcileVerdicts({
         } else {
           logger(`[pass] reconcile ${verdictPath}: no parseable verdict block; consuming`);
         }
-        await run("clear-lease.mjs", [cardId, gen]);
+        if (holdsLease) await run("clear-lease.mjs", [cardId, gen]); // #87: nothing to clear when leaseless
         await appendConsumed(verdictPath);
         results.push({ verdictPath, cardId, outcome: err ? "dispatch_error" : "no-parse", ...(err ? { error_type: err.error_type } : {}) });
         continue;
@@ -789,6 +834,7 @@ export async function reconcileVerdicts({
         id: cardId,
         role,
         gen,
+        ...(leaselessState != null ? { state: leaselessState } : {}), // #87: recovered from the card read
         ...(recorded ?? {}),
       };
 
@@ -803,8 +849,9 @@ export async function reconcileVerdicts({
         buildAdvisorPrompt,
       });
 
-      // CLEAR_LEASE — always, in every branch (the caller owns this; routeVerdict never clears).
-      await run("clear-lease.mjs", [cardId, gen]);
+      // CLEAR_LEASE — in every branch that HOLDS one (the caller owns this; routeVerdict never clears).
+      // #87: a reshape-dispatched advisor took no lease, so there is nothing to release here.
+      if (holdsLease) await run("clear-lease.mjs", [cardId, gen]);
       await appendConsumed(verdictPath);
       if (r.actFailed) {
         logger(`[pass] reconcile ${verdictPath}: act ${r.actFailed.script} FAILED (${r.actFailed.result?.reason ?? r.actFailed.result?.outcome ?? "no detail"}) — card NOT advanced`);
