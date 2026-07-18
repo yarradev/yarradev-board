@@ -4,7 +4,24 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { composePrompt, modeForGate } from "../skills/yarradev-run/scripts/build-prompt.mjs";
+import { composePrompt, modeForGate, stageDefaultsFor } from "../skills/yarradev-run/scripts/build-prompt.mjs";
+
+// issue #83: stageDefaultsFor is fed resolveLifecycle's output (machine.lifecycle ?? cfg.lifecycle) by the
+// CLI body — it doesn't care which lifecycle won, only that it derives to/mode from whichever it's given.
+test("stageDefaultsFor: derives to/mode from the given lifecycle's stage entry", () => {
+  const lifecycle = { dev: { owner: "developer", to: "test", gate: "mechanical" } };
+  assert.deepEqual(stageDefaultsFor(lifecycle, "dev"), { to: "test", mode: "mechanical" });
+});
+
+test("stageDefaultsFor: a board-served lifecycle with a different `to` for the same state wins over any other source (issue #83)", () => {
+  const boardServed = { dev: { owner: "developer", to: "review", gate: "judgement" } };
+  assert.deepEqual(stageDefaultsFor(boardServed, "dev"), { to: "review", mode: "judgement" });
+});
+
+test("stageDefaultsFor: unknown state or missing lifecycle → to undefined, mode defaults to judgement", () => {
+  assert.deepEqual(stageDefaultsFor({ dev: { to: "test" } }, "unknown-state"), { to: undefined, mode: "judgement" });
+  assert.deepEqual(stageDefaultsFor(undefined, "dev"), { to: undefined, mode: "judgement" });
+});
 
 // GH #73: the developer's `mode` must be propagated into the dispatch prompt, derived from the stage gate.
 test("modeForGate maps the mechanical gate to mechanical, everything else to judgement", () => {

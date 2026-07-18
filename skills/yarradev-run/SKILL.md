@@ -74,6 +74,12 @@ tier is right: **`/model sonnet` + `/effort low`**. Role subagents carry their o
   `budgets` = `{ bounce_limit, per_edge_overrides }` (thrash caps). `transition_budget`/`respawn_window_ms`
   are not board.json fields — the live transition-count backstop and CI-stall respawn window are
   decide()'s client-side `DEFAULT_BUDGETS` (`orchestrator-core/src/config.ts`).
+- **Board-served lifecycle (nodes-authored boards) overrides `board.json`'s.** For a board authored via
+  the platform's node-DAG flow, `GET /config`'s `machine.lifecycle` (compiled from that DAG) is the
+  lifecycle source of truth — `list-ready.mjs`, `pass.mjs`, and `build-prompt.mjs` all route/prompt
+  against `machine.lifecycle ?? cfg.lifecycle` (`resolveLifecycle()` in `plugin-io.mjs`), so the served
+  lifecycle wins whenever the board provides one. `acme:main` (and any board that serves no lifecycle)
+  falls straight through to this `.yarradev/board.json` lifecycle, unchanged.
   `deploy.staging` = the shell command the **releaser** runs to deploy a validated change to staging
   (e.g. `wrangler deploy --env staging`); empty → the releaser escalates asking you to configure it.
   Deploy commands are **validated as untrusted** at config load — a single plain invocation only; no shell chaining, substitution, or redirection (put compound deploys in a committed script). Platform-pushed config never supplies command fields (§14 S3).

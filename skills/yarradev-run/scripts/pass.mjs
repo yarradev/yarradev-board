@@ -25,7 +25,7 @@ import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync } fr
 import { spawnSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadConfig } from "./plugin-io.mjs";
+import { loadConfig, resolveLifecycle } from "./plugin-io.mjs";
 import { inFlightCardIds } from "./in-flight.mjs";
 import { stateDir as resolveStateDir, manifestPath as resolveManifestPath } from "./runner/paths.mjs";
 
@@ -1035,7 +1035,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const consumedPath = join(stateDir, CONSUMED_NAME);
   const contextPath = join(stateDir, CONTEXT_NAME);
 
-  const lifecycle = cfg.lifecycle;
   const machine = await client.getMachine().catch((e) => {
     process.stderr.write(`[pass] GET /config failed (${e?.message ?? e}); proceeding without REJECT-edge derivation\n`);
     return { transitions: [] };
@@ -1043,6 +1042,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // §7: expose the board config's per-role model/effort to dispatch (both external + native modes read
   // process.env). loadRoleOverrides merges this as the highest-precedence layer over local board.json.
   process.env.YARRADEV_BOARD_ROLES = JSON.stringify(machine?.roles ?? {});
+  // issue #83: the board-served machine.lifecycle (nodes-authored boards) wins over cfg.lifecycle when
+  // present; the fail-open `{ transitions: [] }` fallback above has no .lifecycle key, so a GET /config
+  // failure falls straight through to cfg.lifecycle exactly as before.
+  const lifecycle = resolveLifecycle(machine, cfg);
 
   const run = makeRun();
   const dispatch = makeDispatch(cfg.runtime?.dispatchTool, cfg.runtime?.dispatchMode ?? "external");

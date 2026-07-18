@@ -81,6 +81,80 @@ function startStub() {
   return { server, seen };
 }
 
+// Same shape as the shipped board.example.json lifecycle (states/edges), so assertLifecycleCoherent
+// still passes — it validates against machine.states/transitions, not machine.lifecycle. This machine
+// ALSO serves a `lifecycle` field (issue #83): backlog's owner differs from the local board.json's
+// ("developer" vs the shipped "designer") so a routed card's `role` proves which lifecycle won.
+const BOARD_SERVED_MACHINE = {
+  initial: "backlog",
+  states: [
+    "backlog", "spec", "dev", "test", "done", "staging", "prod",
+    "epic_analysis", "epic_decompose", "epic_integrating", "epic_done",
+  ],
+  terminal: ["prod", "epic_done"],
+  transitions: [
+    { type: "MOVE", from: "backlog", to: "spec" },
+    { type: "MOVE", from: "spec", to: "dev" },
+    { type: "MOVE", from: "dev", to: "test" },
+    { type: "MOVE", from: "test", to: "done" },
+    { type: "MOVE", from: "done", to: "staging" },
+    { type: "MOVE", from: "staging", to: "prod" },
+    { type: "MOVE", from: "epic_analysis", to: "epic_decompose" },
+    { type: "MOVE", from: "epic_decompose", to: "epic_integrating" },
+    { type: "MOVE", from: "epic_integrating", to: "epic_done" },
+  ],
+  lifecycle: {
+    backlog: { owner: "developer", to: "spec" }, // differs from board.example.json's "designer"
+    spec: { owner: "designer", to: "dev" },
+    dev: { owner: "developer", to: "test" },
+    test: { owner: "tester", to: "done" },
+    done: { owner: "releaser", to: "staging" },
+    staging: { owner: "", to: "prod" },
+    prod: { owner: "", to: null },
+    epic_analysis: { owner: "analyst", to: "epic_decompose" },
+    epic_decompose: { owner: "analyst", to: "epic_integrating" },
+    epic_integrating: { owner: "", to: "epic_done", promoteAs: "analyst" },
+    epic_done: { owner: "", to: null },
+  },
+};
+
+test("list-ready routes with the board-served machine.lifecycle when present (issue #83), not the local board.json lifecycle", async () => {
+  const seen = [];
+  const server = createServer((req, res) => {
+    seen.push(req.url);
+    const json = (obj) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(obj));
+    };
+    if (req.url.endsWith("/config")) return json(BOARD_SERVED_MACHINE);
+    if (/\/cards\/[^/]+\/enriched$/.test(req.url)) return json(READY_CARD);
+    if (req.url.includes("/cards")) return json({ items: [{ id: "c1", state: "backlog", title: "would-be-routed" }], nextAfterId: null });
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end("{}");
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address();
+
+  const child = spawn(process.execPath, [LIST_READY], {
+    cwd: projectBoardDir({ apiBase: `http://127.0.0.1:${port}`, doName: "coherence-wiring-test" }),
+    env: {
+      ...process.env,
+      YDB_TOKEN: "test.token",
+    },
+  });
+
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (d) => (stdout += d));
+  child.stderr.on("data", (d) => (stderr += d));
+  const code = await new Promise((res) => child.on("close", res));
+  await new Promise((r) => server.close(r));
+
+  assert.equal(code, 0, `expected clean exit; got ${code}. stderr: ${stderr}`);
+  const line = JSON.parse(stdout.trim());
+  assert.equal(line.role, "developer", `expected the board-served lifecycle's backlog owner ("developer") to win, not board.json's "designer"; stdout: ${stdout}`);
+});
+
 test("list-ready fails closed on an incoherent GET /config: non-zero exit, no routing, bails before listing", async () => {
   const { server, seen } = startStub();
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
