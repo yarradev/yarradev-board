@@ -461,7 +461,16 @@ export async function routeVerdict({
       const adviceArgs = [id, verdict.head];
       if (verdict.reason != null && verdict.reason !== "") adviceArgs.push(verdict.reason);
       adviceArgs.push("--role", role);
-      await call("advice.mjs", adviceArgs); // records a CLEAN review → advisor_clear goes non-vacuous
+      const adv = await call("advice.mjs", adviceArgs); // records a CLEAN review → advisor_clear goes non-vacuous
+      // GH #85: this act is THE thing that clears advisor_clear — an unchecked failure here was silently
+      // reported as "routed", the verdict was consumed, and the card stalled at this stage forever with a
+      // clean review that never landed. Surface it (and park only on a deterministic failure, per #65).
+      if (!(adv && adv.ok)) {
+        await failActMaybePark("advice.mjs", adv, `advice act failed for ${id} (${role}@${ctx.state ?? "?"}): ${adv?.reason ?? adv?.outcome ?? "no detail"}`);
+        // The clean review never landed → spawn[] bug-filing is downstream bookkeeping for a review the
+        // board doesn't have. Skip it; the retry (or the human, on a park) re-runs the whole branch.
+        return { acts, dispatches, advisorClear422, spawnDeferred, actFailed };
+      }
 
       const spawn = Array.isArray(verdict.spawn) ? verdict.spawn : [];
       const CAP = 20; // mirrors reduce()'s spawn cap
@@ -505,7 +514,7 @@ export async function routeVerdict({
           if (!nr || !nr.ok) break;
         }
       }
-      return { acts, dispatches, advisorClear422, spawnDeferred };
+      return { acts, dispatches, advisorClear422, spawnDeferred, actFailed };
     }
 
     // ---- advisor veto/hold (security-advisor's binding verdicts) -------------
@@ -515,8 +524,13 @@ export async function routeVerdict({
       // no --role flag. Args: <id> <head> [reason...].
       const args = [id, verdict.head];
       if (verdict.reason != null && verdict.reason !== "") args.push(verdict.reason);
-      await call(script, args);
-      return { acts, dispatches, advisorClear422, spawnDeferred };
+      const bind = await call(script, args);
+      // GH #85: a dropped VETO/HOLD is strictly worse than a dropped ADVICE — the card advances past a
+      // blocking verdict. Same surface-and-maybe-park contract as advice.
+      if (!(bind && bind.ok)) {
+        await failActMaybePark(script, bind, `${status} act failed for ${id}: ${bind?.reason ?? bind?.outcome ?? "no detail"}`);
+      }
+      return { acts, dispatches, advisorClear422, spawnDeferred, actFailed };
     }
 
     // unknown status → no-op (log; let the next pass re-derive)
@@ -678,6 +692,41 @@ export async function reconcileVerdicts({
       if (verdict && GEN_EXEMPT_STATUSES.has(verdict.status)) {
         const ctx = { id: cardId, role, ...(recorded ?? {}) };
         const r = await routeVerdict({ verdict, ctx, lifecycle, machine, run, dispatch, getCard, buildAdvisorPrompt });
+
+        // #85: the advisor is NOT always leaseless. #81 assumed the fire-and-forget reshape path was the
+        // only way an advisor runs, but decide() also returns {kind:"work", role: advisorRoleFor(state)}
+        // when advisor_clear is failing (vendor/core.mjs) — and dispatchNew CLAIMs that, role-blind. So an
+        // advisor CAN hold a real lease, recorded in the dispatch-context ledger. Release it iff it's still
+        // ours: recorded.gen present AND still the card's current_gen. Skipping this left the lease dangling
+        // for the full claimTtlS, and decide() noops on `leased` → the card silently stalls at the stage.
+        // The #81 invariant is preserved: with no recorded gen (the reshape path) we hold nothing and clear
+        // nothing, and we never re-CLAIM either way.
+        let heldGen = null;
+        if (recorded?.gen != null) {
+          const leaseCard = await getCard(cardId);
+          if (leaseCard && leaseCard.current_gen === recorded.gen) heldGen = recorded.gen;
+        }
+
+        // #85: a TRANSIENT act failure must not burn the verdict. Consuming it here is what made the
+        // advisor's completed work unrecoverable — the manifest entry was the only remaining copy. Leave it
+        // unconsumed (and the lease held, so decide() can't race a second advisor dispatch) and the next
+        // pass re-posts it; ADVICE/VETO/HOLD are idempotent at a given head, so re-posting is safe.
+        if (r.actFailed && isTransientActFailure(r.actFailed.result)) {
+          logger(`[pass] reconcile ${verdictPath}: advisor act ${r.actFailed.script} failed transiently (${r.actFailed.result?.reason ?? r.actFailed.result?.outcome ?? "no detail"}) — retrying next pass, verdict NOT consumed`);
+          results.push({
+            verdictPath,
+            cardId,
+            outcome: "act_failed",
+            retry: true,
+            advisorClear422: r.advisorClear422,
+            state: ctx.state ?? null,
+            to: ctx.to ?? null,
+            actFailed: r.actFailed,
+          });
+          continue;
+        }
+
+        if (heldGen != null) await run("clear-lease.mjs", [cardId, heldGen]);
         await appendConsumed(verdictPath);
         if (r.actFailed) {
           logger(`[pass] reconcile ${verdictPath}: advisor act ${r.actFailed.script} FAILED (${r.actFailed.result?.reason ?? r.actFailed.result?.outcome ?? "no detail"}) — verdict NOT posted`);
