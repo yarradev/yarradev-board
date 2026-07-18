@@ -1,0 +1,14 @@
+{
+  "project": "yarradev-board",
+  "defaultEnv": "dev",
+  "envs": {
+    "dev": {
+      "vault": "~/.config/keepassxc/yarradev-board/dev.kdbx",
+      "keyFile": "~/.config/keepassxc/yarradev-board/dev.keyx"
+    },
+    "prod": {
+      "vault": "~/.config/keepassxc/yarradev-board/prod.kdbx",
+      "keyFile": "~/.config/keepassxc/yarradev-board/prod.keyx"
+    }
+  }
+}
