@@ -110,7 +110,12 @@ const CASES = [
     name: "worker reject (carries verdict.to) → reject under stage owner",
     verdict: { status: "reject", to: "dev", reason: "tests red" },
     ctx: { id: "c1", state: "test", role: "tester", to: "done", gen: 5, kind: "work" },
-    expect: [["reject.mjs", ["c1", 5, "dev", "tester"]]],
+    // #97: the rationale is recorded as a NOTE after a successful REJECT — a bounce with no explanation
+    // left the receiving stage with a state change and nothing else.
+    expect: [
+      ["reject.mjs", ["c1", 5, "dev", "tester"]],
+      ["note.mjs", ["c1", "[tester rejected → dev] tests red"]],
+    ],
   },
   {
     name: "submitted + kind:work (first submission) → link-pr THEN reattach-ci",
@@ -225,7 +230,10 @@ const CASES = [
     verdict: { status: "reject", reason: "blocking bug confirmed" },
     ctx: { id: "c1", state: "test", role: "code-reviewer", to: "done", gen: 6, kind: "work" },
     // machine fixture has exactly one test→dev REJECT edge → derivedTo = "dev"
-    expect: [["reject.mjs", ["c1", 6, "dev", "code-reviewer"]]],
+    expect: [
+      ["reject.mjs", ["c1", 6, "dev", "code-reviewer"]],
+      ["note.mjs", ["c1", "[code-reviewer rejected → dev] blocking bug confirmed"]], // #97
+    ],
   },
 ];
 
@@ -774,4 +782,111 @@ test("#94: every status routeVerdict actually handles is routable — incl. `dec
     assert.ok(ROUTABLE_STATUSES.has(s), `${s} is routed by routeVerdict and must not be flagged unknown`);
   }
   assert.equal(ROUTABLE_STATUSES.has("aproved"), false);
+});
+
+// ---- #97: the agent-facing contract and the conductor's reader must agree ---------------------------
+// agents/*.md tells four roles to put a question in `summary`; routeVerdict read `reason ?? question` and
+// dropped it. Same class: a reject's rationale (`summary`/`reason` in five docs) reached no act at all,
+// and devops' `summary` on advice/clean was discarded. Each field an agent doc declares must land
+// somewhere — see test/agent-contract-conformance.test.mjs, which enforces this mechanically.
+
+test("#97: question in `summary` (what 4 agent docs actually tell agents to send) reaches the escalation", async () => {
+  const acts = [];
+  await routeVerdict({
+    verdict: { status: "question", summary: "Should auth use OAuth or magic links? Recommend OAuth." },
+    ctx: { id: "c1", state: "spec", role: "designer", to: "dev", gen: 1, kind: "work" },
+    lifecycle: {}, machine: { transitions: [] },
+    run: async (s, a) => { acts.push([s, a]); return { ok: true }; },
+    dispatch: async () => {},
+  });
+  assert.deepEqual(acts[0], ["escalate.mjs", ["c1", "Should auth use OAuth or magic links? Recommend OAuth."]]);
+});
+
+test("#97: question precedence — reason wins, and both are kept when they differ", async () => {
+  const acts = [];
+  await routeVerdict({
+    verdict: { status: "question", reason: "R", summary: "S" },
+    ctx: { id: "c1", state: "spec", role: "designer", to: "dev", gen: 1, kind: "work" },
+    lifecycle: {}, machine: { transitions: [] },
+    run: async (s, a) => { acts.push([s, a]); return { ok: true }; },
+    dispatch: async () => {},
+  });
+  assert.equal(acts[0][1][1], "R — S", "no field an agent filled in may be silently dropped");
+});
+
+test("#97: a reject's rationale is recorded as a NOTE (worker reject, `to` from the verdict)", async () => {
+  const acts = [];
+  await routeVerdict({
+    verdict: { status: "reject", to: "spec", summary: "the plan assumes an API that doesn't exist" },
+    ctx: { id: "c1", state: "dev", role: "developer", to: "test", gen: 7, kind: "work" },
+    lifecycle: {}, machine: { transitions: [] },
+    run: async (s, a) => { acts.push([s, a]); return { ok: true }; },
+    dispatch: async () => {},
+  });
+  assert.deepEqual(acts[0], ["reject.mjs", ["c1", 7, "spec", "developer"]]);
+  assert.equal(acts[1][0], "note.mjs", "the reason a card bounced must survive the bounce (#18 forward-context)");
+  assert.match(acts[1][1][1], /the plan assumes an API that doesn't exist/);
+});
+
+test("#97: an advisor reject's rationale is recorded too (derived edge, `reason` field)", async () => {
+  const acts = [];
+  await routeVerdict({
+    verdict: { status: "reject", reason: "SQL injection in handlers/auth.ts:42" },
+    ctx: { id: "c1", state: "dev", role: "code-reviewer", to: "test", gen: 7, kind: "work" },
+    lifecycle: {}, machine: { transitions: [{ from: "dev", to: "spec", type: "REJECT" }] },
+    run: async (s, a) => { acts.push([s, a]); return { ok: true }; },
+    dispatch: async () => {},
+  });
+  assert.equal(acts[0][0], "reject.mjs");
+  assert.equal(acts[1][0], "note.mjs");
+  assert.match(acts[1][1][1], /SQL injection/);
+});
+
+test("#97: no rationale → no NOTE (never post an empty note)", async () => {
+  const acts = [];
+  await routeVerdict({
+    verdict: { status: "reject", to: "spec" },
+    ctx: { id: "c1", state: "dev", role: "developer", to: "test", gen: 7, kind: "work" },
+    lifecycle: {}, machine: { transitions: [] },
+    run: async (s, a) => { acts.push([s, a]); return { ok: true }; },
+    dispatch: async () => {},
+  });
+  assert.deepEqual(acts.map((a) => a[0]), ["reject.mjs"]);
+});
+
+test("#97: a FAILED reject records no rationale (the bounce never happened)", async () => {
+  const acts = [];
+  await routeVerdict({
+    verdict: { status: "reject", to: "spec", summary: "why" },
+    ctx: { id: "c1", state: "dev", role: "developer", to: "test", gen: 7, kind: "work" },
+    lifecycle: {}, machine: { transitions: [] },
+    run: async (s, a) => { acts.push([s, a]); return s === "reject.mjs" ? { ok: false, status: 422, outcome: "bad_act" } : { ok: true }; },
+    dispatch: async () => {},
+  });
+  assert.ok(!acts.some((a) => a[0] === "note.mjs"), "no NOTE for a rejection the board refused");
+});
+
+test("#97: devops-style clean — `summary` becomes the ADVICE reason when there is no `reason`", async () => {
+  const acts = [];
+  await routeVerdict({
+    verdict: { status: "clean", head: "abc123", summary: "infra prerequisites verified" },
+    ctx: { id: "c1", state: "done", role: "devops", to: "staging", gen: 3, kind: "work" },
+    lifecycle: {}, machine: { transitions: [] },
+    run: async (s, a) => { acts.push([s, a]); return { ok: true }; },
+    dispatch: async () => {}, getCard: async () => null,
+  });
+  assert.deepEqual(acts[0], ["advice.mjs", ["c1", "abc123", "infra prerequisites verified", "--role", "devops"]]);
+});
+
+test("#97: a submitted verdict's summary is recorded so the reviewer reads what was built", async () => {
+  const acts = [];
+  await routeVerdict({
+    verdict: { status: "submitted", summary: "added rate limiting middleware", evidence: { repo: "acme/main", pr_number: 42, head: "h" } },
+    ctx: { id: "c1", state: "dev", role: "developer", to: "test", gen: 9, kind: "work" },
+    lifecycle: {}, machine: { transitions: [] },
+    run: async (s, a) => { acts.push([s, a]); return { ok: true }; },
+    dispatch: async () => {},
+  });
+  assert.equal(acts[0][0], "link-pr.mjs");
+  assert.ok(acts.some((a) => a[0] === "note.mjs" && /rate limiting middleware/.test(a[1][1])));
 });
