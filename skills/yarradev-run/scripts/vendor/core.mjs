@@ -472,8 +472,18 @@ var BoardClient = class {
   // advisor_clear gate goes non-vacuous and the card advances — a clean/advice verdict does NOT park it.
   // Posting this at every advisor dispatch is what stops a clean card's advisor being re-dispatched each
   // tick (the clean-card livelock: no advisor_state row → advisor_clear false forever → re-dispatch).
+  //
+  // data.role carries the ACTING advisor role: the board resolves an advisor act's advisor_state key as
+  // `data.role ?? input.roles[0]`. Under a single shared runner token one delegate holds every operator
+  // role and roles[0] is always "orchestrator", so omitting it filed the clean review under a key no
+  // gate reads — advisor_clear stayed vacuous and the card wedged, silently (ADVICE still 202s).
+  // Omitted when the client carries no role, preserving behavior for callers that never set one.
   advice(id, head, reason = "") {
-    return this.act({ type: "ADVICE", item_id: id, data: { reviewed_head: head, reason } });
+    return this.act({
+      type: "ADVICE",
+      item_id: id,
+      data: { ...this.role ? { role: this.role } : {}, reviewed_head: head, reason }
+    });
   }
   // Mint a new card (gen-exempt — CREATE has no prior gen to fence on; caller mints item_id, board
   // REJECTS an empty one, storage.ts:1877-1878). Used by create.mjs (analyst-driven epic decomposition)
