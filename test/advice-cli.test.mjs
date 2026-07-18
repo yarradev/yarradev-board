@@ -65,7 +65,12 @@ test("advice.mjs --role code-reviewer posts under YDB_TOKEN_CODE_REVIEWER, not s
   assert.equal(requests[0].url, "/boards/advice-cli-test/acts");
   assert.equal(requests[0].body.type, "ADVICE");
   assert.equal(requests[0].body.item_id, "card-1");
-  assert.deepEqual(requests[0].body.data, { reviewed_head: "abc123", reason: "looks fine" });
+  assert.deepEqual(
+    requests[0].body.data,
+    { role: "code-reviewer", reviewed_head: "abc123", reason: "looks fine" },
+    "data.role must carry the acting advisor role — the board resolves advisor_state's key as " +
+      "data.role ?? roles[0], and under a single shared runner token roles[0] is 'orchestrator'",
+  );
   assert.equal(
     requests[0].headers.authorization,
     "Bearer code-reviewer.token",
@@ -89,6 +94,11 @@ test("advice.mjs defaults to security-advisor when --role is omitted (backward c
   await new Promise((r) => server.close(r));
 
   assert.equal(requests[0].headers.authorization, "Bearer security-advisor.token");
+  assert.equal(
+    requests[0].body.data.role,
+    "security-advisor",
+    "the default role must also be sent in the act body, not just encoded in the token",
+  );
 });
 
 test("advice.mjs falls back to shared YDB_TOKEN when the role's token is unset", async () => {
