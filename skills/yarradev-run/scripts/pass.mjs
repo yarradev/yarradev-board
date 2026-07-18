@@ -240,6 +240,9 @@ export function decideDispatch({ recResults, prevBreaker, inFlightCount, K, maxC
  */
 export function isTransientActFailure(result) {
   if (!result) return true; // no result at all → client crashed before emitting → transient
+  // #94: a script that rejected its arguments (exit 2) will reject them identically on every retry —
+  // deterministic, so park. Checked BEFORE the crash envelope below, which it would otherwise match.
+  if (result.outcome === "bad_invocation") return false;
   if (result.outcome === "error") return true; // makeRun's crash/no-JSON envelope (network throw / spawn fail)
   const s = Number(result.status);
   if (Number.isNaN(s)) return false; // unknown shape → deterministic (safe default: park)
@@ -307,6 +310,34 @@ export const ROUTABLE_STATUSES = new Set([
 ]);
 
 /**
+ * #94: the payload each status's routeVerdict branch actually dereferences. A verdict can parse, carry a
+ * routable status, and still be unusable — and dispatching the act anyway meant the act script rejected
+ * its own arguments (exit 2), which reconcile then RETRIED every pass forever. Validate first, park once.
+ *
+ * Returns a human-readable reason when the payload is unusable, else null.
+ *
+ * ⚠️ Deliberately looser than core's parseVerdict on one point: core requires `role` on
+ * advice/clean/veto/hold, but routeVerdict sources the acting role from `ctx.role` (THIS pass's dispatched
+ * advisor) and ignores `verdict.role` entirely. Requiring it here would reject valid verdicts. Another
+ * instance of the contract drift tracked in GH #94 — do not "align" it without reading that issue.
+ */
+export function malformedVerdictReason(verdict, status = verdict?.status) {
+  const missingHead = typeof verdict?.head !== "string" || verdict.head === "";
+  if ((status === "advice" || status === "clean") && missingHead) {
+    return `missing \`head\` (the reviewed commit) — an ADVICE records a review AT a head, so the board cannot file one without it`;
+  }
+  if ((status === "veto" || status === "hold") && missingHead) {
+    return `missing \`head\` (the reviewed commit) — a ${status.toUpperCase()} is head-fenced and cannot be posted without it`;
+  }
+  if (status === "submitted") {
+    const ev = verdict?.evidence;
+    const ok = ev && typeof ev.repo === "string" && typeof ev.head === "string" && typeof ev.pr_number === "number";
+    if (!ok) return "missing or incomplete `evidence{repo, pr_number, head}` — the PR link cannot be posted without all three";
+  }
+  return null;
+}
+
+/**
  * #92: escalation text for a `question` verdict that carries no question. Names the role, stage, and the
  * gen/head it was produced at, so the park a human lands on says WHY it exists — the old fallback was the
  * bare word "question", which blocks the card (ASK → blocked=true, and `not_blocked` is a gate predicate)
@@ -350,6 +381,19 @@ export async function routeVerdict({
     const id = ctx.id;
     const gen = ctx.gen;
     const status = verdict.status;
+
+    // #94: PAYLOAD GATE — a verdict can parse and carry a routable status while missing the field its
+    // branch dereferences (a `clean` with no head, a `submitted` with no pr_number). Dispatching anyway
+    // meant the act script rejected its own arguments with exit 2, which reconcile misread as transient
+    // and RETRIED every pass forever, verdict unconsumed and lease held. Park once, here, instead.
+    const malformed = malformedVerdictReason(verdict, status);
+    if (malformed) {
+      await call("escalate.mjs", [
+        id,
+        `${ctx.role ?? "unknown-role"}@${ctx.state ?? "unknown-state"} returned a malformed ${status} verdict: ${malformed}`,
+      ]);
+      return { acts, dispatches, advisorClear422, spawnDeferred, malformedVerdict: malformed };
+    }
 
     /** Load-bearing act failed → surface (act_failed) AND park (escalate). Uniform across branches (#58/#59/#60).
      * Defined here (not above the try) because it closes over `id`, which is scoped to this try block. */
@@ -810,13 +854,18 @@ export async function reconcileVerdicts({
         if (r.actFailed) {
           logger(`[pass] reconcile ${verdictPath}: advisor act ${r.actFailed.script} FAILED (${r.actFailed.result?.reason ?? r.actFailed.result?.outcome ?? "no detail"}) — verdict NOT posted`);
         }
+        // #94: a malformed payload is its own terminal outcome — parked and CONSUMED, never retried.
+        if (r.malformedVerdict) {
+          logger(`[pass] reconcile ${verdictPath}: malformed ${verdict.status} verdict (${r.malformedVerdict}) — parked, verdict consumed`);
+        }
         results.push({
           verdictPath,
           cardId,
-          outcome: r.error ? "error" : r.actFailed ? "act_failed" : "routed",
+          outcome: r.error ? "error" : r.malformedVerdict ? "malformed_verdict" : r.actFailed ? "act_failed" : "routed",
           advisorClear422: r.advisorClear422,
           state: ctx.state ?? null,
           to: ctx.to ?? null,
+          ...(r.malformedVerdict ? { malformedVerdict: r.malformedVerdict } : {}),
           ...(r.actFailed ? { actFailed: r.actFailed } : {}),
           ...(r.error ? { error: r.error } : {}),
         });
@@ -915,15 +964,27 @@ export async function reconcileVerdicts({
       if (r.unknownStatus) {
         logger(`[pass] reconcile ${verdictPath}: unroutable verdict status ${JSON.stringify(r.unknownStatus)} — parked, card NOT advanced`);
       }
+      if (r.malformedVerdict) {
+        logger(`[pass] reconcile ${verdictPath}: malformed ${verdict.status} verdict (${r.malformedVerdict}) — parked, card NOT advanced`);
+      }
       // #94: `unknown_status` is its own outcome — folding it into "routed" is what made an unroutable
       // verdict look like a successful one (and inflated spawnPass's routed-line verdict count).
       results.push({
         verdictPath,
         cardId,
-        outcome: r.error ? "error" : r.actFailed ? "act_failed" : r.unknownStatus ? "unknown_status" : "routed",
+        outcome: r.error
+          ? "error"
+          : r.malformedVerdict
+            ? "malformed_verdict"
+            : r.actFailed
+              ? "act_failed"
+              : r.unknownStatus
+                ? "unknown_status"
+                : "routed",
         advisorClear422: r.advisorClear422,
         state: ctx.state ?? null,
         to: ctx.to ?? null,
+        ...(r.malformedVerdict ? { malformedVerdict: r.malformedVerdict } : {}),
         ...(r.unknownStatus ? { unknownStatus: r.unknownStatus } : {}),
         ...(r.actFailed ? { actFailed: r.actFailed } : {}),
         ...(r.error ? { error: r.error } : {}),
@@ -1032,10 +1093,14 @@ export function makeRun(scriptsDir = SCRIPTS_DIR) {
     if (script === "build-prompt.mjs") return { path: stdout.trim(), ok: r.status === 0 };
     const parsed = parseJsonOut(stdout);
     if (parsed) return parsed;
+    // #94: distinguish "the script REJECTED its arguments" from "the script crashed". Exit 2 is the
+    // uniform usage/arg-error convention across every act script; emit() only ever exits 0 or 1. Lumping
+    // both into outcome:"error" made isTransientActFailure treat a permanently-invalid invocation as a
+    // transient board blip, so reconcile retried it every pass forever without consuming the verdict.
     return {
       ok: false,
       status: r.status,
-      outcome: "error",
+      outcome: r.status === 2 ? "bad_invocation" : "error",
       reason: (r.stderr ?? "").trim() || `unexpected ${script} output`,
     };
   };
