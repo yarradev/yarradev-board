@@ -520,6 +520,11 @@ If you are **not** in an interactive session with an `Agent` tool (headless/cron
           clean-card livelock), `veto`/`hold` → `veto.mjs`/`hold.mjs`, `reject` → the **REJECT routing**
           rule below. A stage with no configured advisor skips this bullet entirely.
       - `status:"question"` → `node $S/escalate.mjs <id> "<the question>"` (park for a human).
+        The verdict **must** carry the question text in `reason` (or `question`) — an ASK sets
+        `blocked=true` and `not_blocked` is a gate predicate, so a question with no text blocks the
+        card while giving the human nothing to answer. A reasonless `question` is treated as a
+        malformed verdict: it still parks, but under a self-describing reason naming the role, stage
+        and gen (GH #92).
         `"error"` / **no parseable block** → post nothing; log; retry next pass.
    4. **CLEAR_LEASE — always:** `node $S/clear-lease.mjs <id> <gen>` in **every** branch.
    5. Log a one-line outcome.

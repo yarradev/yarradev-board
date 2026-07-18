@@ -21,7 +21,12 @@ export function buildStatus({ paused, intervalMs, lastTick, nextTickAt, breaker,
     intervalS: Math.round(intervalMs / 1000),
     passRunning: !!passRunning,
     breaker: breaker ?? "CLOSED",
-    lastTick: lastTick ? { atS: Math.round(lastTick.at / 1000), ok: !!lastTick.ok } : null,
+    // #91: surface WHY the last pass failed. The daemon already records `error`; omitting it here meant a
+    // failing pass showed as { atS, ok:false } with the reason one field away and hidden — and `status` is
+    // the first (often only) thing anyone checks when the loop looks healthy but nothing is moving.
+    lastTick: lastTick
+      ? { atS: Math.round(lastTick.at / 1000), ok: !!lastTick.ok, ...(lastTick.error ? { error: lastTick.error } : {}) }
+      : null,
     nextTickInS: nextTickAt ? Math.max(0, Math.round((nextTickAt - now) / 1000)) : null,
   };
 }

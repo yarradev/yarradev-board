@@ -46,3 +46,35 @@ test("createDaemon folds pass events into an activity map exposed via getActivit
   await daemon._drain();
   assert.equal(daemon.getActivity().get("c1").detail, "dev→test");
 });
+
+// ---- #91: the daemon must not discard the reason a failing pass already computed -------------------
+
+test("#91: createDaemon carries spawnPass's error into lastTick on a non-throwing failure", async () => {
+  // spawnPass resolves { ok:false, error:"exit 1: …" } — it does not throw — so the catch branch never
+  // runs and the success path silently dropped r.error. A non-zero exit was recorded as ok:false with
+  // no reason, even though the reason was in hand.
+  const d = createDaemon({
+    runPass: async () => ({ ok: false, verdicts: 0, error: "exit 1: API Error: 429 [1310][Weekly/Monthly Limit Exhausted]" }),
+    intervalMs: 1e9,
+    now: () => 0,
+  });
+  await d.requestTick();
+  await d._drain();
+  assert.equal(d.lastTick().ok, false);
+  assert.match(d.lastTick().error, /Weekly\/Monthly Limit Exhausted/);
+});
+
+test("#91: a successful pass records no error field", async () => {
+  const d = createDaemon({ runPass: async () => ({ ok: true, verdicts: 2 }), intervalMs: 1e9, now: () => 0 });
+  await d.requestTick();
+  await d._drain();
+  assert.equal("error" in d.lastTick(), false, "a healthy tick must stay error-free");
+});
+
+test("#91: a THROWING pass still records its message (unchanged catch-branch behavior)", async () => {
+  const d = createDaemon({ runPass: async () => { throw new Error("boom"); }, intervalMs: 1e9, now: () => 0 });
+  await d.requestTick();
+  await d._drain();
+  assert.equal(d.lastTick().ok, false);
+  assert.match(d.lastTick().error, /boom/);
+});

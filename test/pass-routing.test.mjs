@@ -163,10 +163,32 @@ const CASES = [
     expect: [["escalate.mjs", ["c1", "ambiguous spec section 3"]]],
   },
   {
-    name: "question with no reason → escalate with a generic reason",
+    // #92: the old fallback minted an escalation whose ENTIRE text was the literal "question" — it blocked
+    // the card (not_blocked is a gate predicate) while giving the human nothing to answer, so the card could
+    // only be freed by answering a question that never asked anything. Live: 9a120b8d on yarrasys:yarradev
+    // sat at spec with not_blocked as its ONLY failing predicate, behind a complete designer plan.
+    // Still parks (a reasonless question is a misbehaving agent, and NOT parking risks a
+    // dispatch→question→re-dispatch livelock) — but the text now says what happened.
+    name: "#92: question with no reason → escalate with a SELF-DESCRIBING reason (never the bare word)",
     verdict: { status: "question" },
     ctx: { id: "c1", state: "spec", role: "designer", to: "dev", gen: 1, kind: "work" },
-    expect: [["escalate.mjs", ["c1", "question"]]],
+    expect: [
+      ["escalate.mjs", ["c1", 'designer@spec returned status:"question" with no reason or question field (malformed verdict at gen 1)']],
+    ],
+  },
+  {
+    name: "#92: question with an empty-string reason → treated as absent (same self-describing text)",
+    verdict: { status: "question", reason: "" },
+    ctx: { id: "c1", state: "dev", role: "developer", to: "test", gen: 4, kind: "work", head: "abc123" },
+    expect: [
+      ["escalate.mjs", ["c1", 'developer@dev returned status:"question" with no reason or question field (malformed verdict at gen 4, head abc123)']],
+    ],
+  },
+  {
+    name: "#92: question carrying `question` (not `reason`) still uses it verbatim",
+    verdict: { status: "question", question: "which auth flow?" },
+    ctx: { id: "c1", state: "spec", role: "designer", to: "dev", gen: 1, kind: "work" },
+    expect: [["escalate.mjs", ["c1", "which auth flow?"]]],
   },
   {
     name: "error verdict → no act posted (log + retry next pass)",

@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { spawnPass } from "../skills/yarradev-run/scripts/runner/daemon.mjs";
+import { spawnPass, redactSecrets } from "../skills/yarradev-run/scripts/runner/daemon.mjs";
 
 // Mirrors the fakeSpawn pattern in test/dispatch-stream.test.mjs: a child EventEmitter with
 // .stdout/.stderr EventEmitters, plus a .kill() spy so timeout-kill behavior is observable.
@@ -104,4 +104,94 @@ test("spawnPass times out, calls kill(), and resolves ok:false with a timeout er
   assert.deepEqual(child.killCalls, ["SIGKILL"]);
   assert.equal(result.ok, false);
   assert.equal(result.error, "pass timeout");
+});
+
+// ---- #91: pass failures must carry a reason ------------------------------------------------------
+// A board sat wedged for hours on 2026-07-18 while every dispatched subagent crashed on
+// `API Error: 429 [1310][Weekly/Monthly Limit Exhausted]`. The runner reported
+// { paused:false, breaker:"CLOSED", lastTick:{ok:true} } throughout — the "loop looks healthy and is
+// doing nothing" class is invisible from status, which is the first (and often only) thing anyone
+// checks. stderr held the reason and was discarded on the floor.
+
+test("#91: spawnPass attaches captured stderr to the error on a nonzero exit", async () => {
+  const child = fakeChild();
+  const p = spawnPass({ passPath: "/fake/pass.mjs", env: {}, spawn: () => child });
+  queueMicrotask(() => {
+    child.stderr.emit("data", Buffer.from("API Error: 429 [1310][Weekly/Monthly Limit Exhausted]\n"));
+    child.emit("close", 1, null);
+  });
+  const r = await p;
+  assert.equal(r.ok, false);
+  assert.match(r.error, /^exit 1: /, "keeps the exit code prefix");
+  assert.match(r.error, /Weekly\/Monthly Limit Exhausted/, "the actual reason must reach the caller");
+});
+
+test("#91: spawnPass still drains stderr and emits NO error on a clean exit", async () => {
+  // The drain is load-bearing — a chatty pass must not fill the pipe buffer and block the child.
+  // Capturing must not change that, and a successful pass stays error-free however noisy it was.
+  const child = fakeChild();
+  const p = spawnPass({ passPath: "/fake/pass.mjs", env: {}, spawn: () => child });
+  queueMicrotask(() => {
+    child.stderr.emit("data", Buffer.from("[pass] chatty but harmless\n"));
+    child.emit("close", 0, null);
+  });
+  const r = await p;
+  assert.equal(r.ok, true);
+  assert.equal(r.error, undefined, "a clean exit carries no error even with stderr output");
+});
+
+test("#91: spawnPass REDACTS secrets from captured stderr", async () => {
+  // stderr can carry an Authorization header, a token in a URL, or an env dump. lastTick.error
+  // surfaces through the runner MCP `status` tool into agent transcripts and logs, so the capture
+  // must scrub before it stores. Best-effort by construction — bounded patterns, not a guarantee.
+  const child = fakeChild();
+  const p = spawnPass({ passPath: "/fake/pass.mjs", env: {}, spawn: () => child });
+  queueMicrotask(() => {
+    child.stderr.emit("data", Buffer.from(
+      "authorization: Bearer sk-ant-oat01-SECRETVALUE\n" +
+      "YDB_TOKEN_DEVELOPER=tok.SECRETVALUE\n" +
+      "gh token ghp_SECRETVALUEsecretvalue123456\n",
+    ));
+    child.emit("close", 1, null);
+  });
+  const r = await p;
+  assert.ok(!r.error.includes("SECRETVALUE"), `secret leaked into the error: ${r.error}`);
+  assert.match(r.error, /redacted/, "redaction is visible, not silent truncation");
+});
+
+test("#91: spawnPass bounds the captured stderr so status can't bloat", async () => {
+  const child = fakeChild();
+  const p = spawnPass({ passPath: "/fake/pass.mjs", env: {}, spawn: () => child });
+  queueMicrotask(() => {
+    for (let i = 0; i < 200; i++) child.stderr.emit("data", Buffer.from("x".repeat(500) + "\n"));
+    child.emit("close", 1, null);
+  });
+  const r = await p;
+  assert.ok(r.error.length <= 2100, `error must stay bounded, got ${r.error.length} chars`);
+});
+
+test("#91: a pass timeout keeps its 'pass timeout' error (not replaced by stderr)", async () => {
+  const child = fakeChild();
+  const p = spawnPass({ passPath: "/fake/pass.mjs", env: {}, timeoutMs: 10, spawn: () => child });
+  child.stderr.emit("data", Buffer.from("some noise\n"));
+  setTimeout(() => child.emit("close", null, "SIGKILL"), 40);
+  const r = await p;
+  assert.equal(r.ok, false);
+  assert.match(r.error, /pass timeout/);
+});
+
+test("#91: redactSecrets scrubs the known secret shapes and leaves ordinary text intact", () => {
+  const r = redactSecrets(
+    "authorization: Bearer sk-ant-oat01-AAA\n" +
+    "YDB_TOKEN_DEVELOPER=tok.BBB\n" +
+    "ANTHROPIC_API_KEY: sk-ant-CCC\n" +
+    "ghp_DDDDDDDDDDDDDDDD ghs_EEEEEEEEEEEEEEEE\n" +
+    "https://board.test/acts?token=FFF&x=1\n" +
+    "API Error: 429 [1310][Weekly/Monthly Limit Exhausted]\n",
+  );
+  for (const secret of ["AAA", "BBB", "CCC", "DDDDDDDDDDDDDDDD", "EEEEEEEEEEEEEEEE", "FFF"]) {
+    assert.ok(!r.includes(secret), `leaked ${secret}: ${r}`);
+  }
+  assert.match(r, /Weekly\/Monthly Limit Exhausted/, "the diagnostic content must survive redaction");
+  assert.match(r, /x=1/, "non-secret query params are untouched");
 });
