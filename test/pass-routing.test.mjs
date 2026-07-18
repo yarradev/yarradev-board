@@ -12,7 +12,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { routeVerdict, rejectTargetOf, isTransientActFailure } from "../skills/yarradev-run/scripts/pass.mjs";
+import { routeVerdict, rejectTargetOf, isTransientActFailure, ROUTABLE_STATUSES } from "../skills/yarradev-run/scripts/pass.mjs";
 
 // ---- #65: transient-vs-deterministic act-failure classifier (pure) -------------
 test("isTransientActFailure: network/429/5xx/409 → transient; 422/403/unknown → deterministic", () => {
@@ -725,4 +725,53 @@ test("routeVerdict: decomposed mid-loop CREATE fail → actFailed + escalate (#6
   });
   assert.ok(r.actFailed, "partial CREATE failure surfaced");
   assert.ok(r.acts.some(([s]) => s === "escalate.mjs"), "partial decompose escalates (no re-decompose dup)");
+});
+
+// ---- #94: an unknown status must never be reported as success -------------------------------------
+// routeVerdict's final fallthrough was a silent no-op returning neither `error` nor `actFailed`, and
+// reconcileVerdicts maps exactly that shape to outcome "routed". So a typo'd or hallucinated status
+// posted no acts, was consumed, and reported a FALSE SUCCESS into the status stream (spawnPass even
+// tallies "routed" into the verdicts count, so a board doing nothing reported healthy throughput).
+// Same "loop looks healthy and is doing nothing" class as #91, one level down.
+
+test("#94: unknown verdict status → escalates with a self-describing reason and reports unknownStatus", async () => {
+  const acts = [];
+  const r = await routeVerdict({
+    verdict: { status: "aproved", to: "test" }, // typo'd status
+    ctx: { id: "c1", state: "dev", role: "developer", to: "test", gen: 5, kind: "work" },
+    lifecycle: {},
+    machine: { transitions: [] },
+    run: async (script, args) => { acts.push([script, args]); return { ok: true }; },
+    dispatch: async () => {},
+  });
+  assert.equal(r.unknownStatus, "aproved", "the caller must be able to tell this was unroutable");
+  assert.equal(acts.length, 1, "exactly one act: the escalation");
+  assert.equal(acts[0][0], "escalate.mjs");
+  assert.match(acts[0][1][1], /aproved/, "the park must name the offending status");
+  assert.match(acts[0][1][1], /developer@dev/, "…and where it came from");
+});
+
+test("#94: a MISSING status is unroutable too (not silently routed)", async () => {
+  const acts = [];
+  const r = await routeVerdict({
+    verdict: { to: "test" },
+    ctx: { id: "c1", state: "dev", role: "developer", to: "test", gen: 5, kind: "work" },
+    lifecycle: {},
+    machine: { transitions: [] },
+    run: async (script, args) => { acts.push([script, args]); return { ok: true }; },
+    dispatch: async () => {},
+  });
+  assert.ok(r.unknownStatus != null, "an absent status must be flagged, not treated as routed");
+  assert.equal(acts[0][0], "escalate.mjs");
+});
+
+test("#94: every status routeVerdict actually handles is routable — incl. `decomposed`", () => {
+  // REGRESSION GUARD. core's STATUSES (vendor/core.mjs) does NOT contain "decomposed", but pass.mjs
+  // routes it (the analyst epic-decomposition path). Deriving this enum from core's — the obvious
+  // "single source of truth" move — would flag every analyst decomposition as unknown and park working
+  // epics. The enum must track what routeVerdict BRANCHES on, not what core validates.
+  for (const s of ["advance", "reject", "submitted", "decomposed", "question", "error", "advice", "clean", "veto", "hold"]) {
+    assert.ok(ROUTABLE_STATUSES.has(s), `${s} is routed by routeVerdict and must not be flagged unknown`);
+  }
+  assert.equal(ROUTABLE_STATUSES.has("aproved"), false);
 });

@@ -283,6 +283,30 @@ function isBounceBudget(r) {
  */
 
 /**
+ * #94: the statuses routeVerdict actually branches on. Anything else cannot be acted upon, and must be
+ * surfaced rather than silently consumed — the old fallthrough returned neither `error` nor `actFailed`,
+ * which is exactly the shape reconcileVerdicts maps to outcome "routed" (a false success that also
+ * inflates spawnPass's verdict count).
+ *
+ * ⚠️ Deliberately NOT derived from core's STATUSES (vendor/core.mjs), which omits "decomposed" — the
+ * analyst epic-decomposition path pass.mjs has routed since #28. Deriving it from core would park every
+ * working decomposition. This enum tracks what routeVerdict BRANCHES on, not what core validates; the
+ * two contracts have drifted (see GH #94) and reconciling them is a separate, cross-repo decision.
+ */
+export const ROUTABLE_STATUSES = new Set([
+  "advance",
+  "reject",
+  "submitted",
+  "decomposed",
+  "question",
+  "error",
+  "advice",
+  "clean",
+  "veto",
+  "hold",
+]);
+
+/**
  * #92: escalation text for a `question` verdict that carries no question. Names the role, stage, and the
  * gen/head it was produced at, so the park a human lands on says WHY it exists — the old fallback was the
  * bare word "question", which blocks the card (ASK → blocked=true, and `not_blocked` is a gate predicate)
@@ -556,8 +580,17 @@ export async function routeVerdict({
       return { acts, dispatches, advisorClear422, spawnDeferred, actFailed };
     }
 
-    // unknown status → no-op (log; let the next pass re-derive)
-    return { acts, dispatches, advisorClear422, spawnDeferred };
+    // ---- unroutable status → park (never a silent no-op) ---------------------
+    // #94: this used to return the same shape as a successful route, so reconcile reported "routed" —
+    // no acts posted, verdict consumed, card unmoved, and the status stream showing healthy throughput.
+    // Park it (ESCALATE is gen-exempt) with a self-describing reason, and tell the caller via
+    // `unknownStatus` so the reconcile outcome can name it. Parking rather than retrying matches the #92
+    // reasoning: nothing about the card changed, so a silent consume just re-dispatches it every pass.
+    await call("escalate.mjs", [
+      id,
+      `${ctx.role ?? "unknown-role"}@${ctx.state ?? "unknown-state"} returned an unroutable verdict status ${JSON.stringify(status ?? null)} (expected one of: ${[...ROUTABLE_STATUSES].join(", ")})`,
+    ]);
+    return { acts, dispatches, advisorClear422, spawnDeferred, unknownStatus: String(status ?? "") };
   } catch (error) {
     // Best-effort: a thrown error in routing is surfaced (not thrown) so the caller's per-card loop survives.
     return { acts, dispatches, advisorClear422, spawnDeferred, error };
@@ -879,13 +912,19 @@ export async function reconcileVerdicts({
       if (r.actFailed) {
         logger(`[pass] reconcile ${verdictPath}: act ${r.actFailed.script} FAILED (${r.actFailed.result?.reason ?? r.actFailed.result?.outcome ?? "no detail"}) — card NOT advanced`);
       }
+      if (r.unknownStatus) {
+        logger(`[pass] reconcile ${verdictPath}: unroutable verdict status ${JSON.stringify(r.unknownStatus)} — parked, card NOT advanced`);
+      }
+      // #94: `unknown_status` is its own outcome — folding it into "routed" is what made an unroutable
+      // verdict look like a successful one (and inflated spawnPass's routed-line verdict count).
       results.push({
         verdictPath,
         cardId,
-        outcome: r.error ? "error" : r.actFailed ? "act_failed" : "routed",
+        outcome: r.error ? "error" : r.actFailed ? "act_failed" : r.unknownStatus ? "unknown_status" : "routed",
         advisorClear422: r.advisorClear422,
         state: ctx.state ?? null,
         to: ctx.to ?? null,
+        ...(r.unknownStatus ? { unknownStatus: r.unknownStatus } : {}),
         ...(r.actFailed ? { actFailed: r.actFailed } : {}),
         ...(r.error ? { error: r.error } : {}),
       });
